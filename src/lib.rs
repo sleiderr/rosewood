@@ -1,6 +1,7 @@
+#![no_std]
 extern crate alloc;
 
-use std::{
+use core::{
     cmp::{Ordering, max, min},
     mem::swap,
 };
@@ -73,6 +74,7 @@ enum RosewoodDeletionStep {
 #[derive(Debug)]
 pub struct Rosewood<K: PartialEq + Ord> {
     storage: Vec<RosewoodNode<K>>,
+    length: usize,
     root: usize,
 }
 
@@ -80,6 +82,29 @@ impl<K: PartialEq + Ord> Rosewood<K> {
     const BLACK_NIL: usize = 0;
 
     pub fn contains(&self, key: K) -> bool {
+        return self.lookup(key) != Self::BLACK_NIL;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
+    pub fn len(&self) -> usize {
+        self.length
+    }
+
+    pub fn remove(&mut self, key: K) -> bool {
+        match self.lookup(key) {
+            Self::BLACK_NIL => false,
+            idx => {
+                self.delete(idx);
+
+                true
+            }
+        }
+    }
+
+    fn lookup(&self, key: K) -> usize {
         let mut current_node = self.root;
 
         while current_node != Self::BLACK_NIL {
@@ -90,7 +115,7 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                     current_node = curr_node_storage.left;
                 }
                 Ordering::Equal => {
-                    return true;
+                    return current_node;
                 }
                 Ordering::Greater => {
                     current_node = curr_node_storage.right;
@@ -98,10 +123,12 @@ impl<K: PartialEq + Ord> Rosewood<K> {
             }
         }
 
-        false
+        Self::BLACK_NIL
     }
 
-    pub fn delete(&mut self, node_idx: usize) {
+    fn delete(&mut self, node_idx: usize) {
+        self.length -= 1;
+
         match (self.storage[node_idx].left, self.storage[node_idx].right) {
             (Self::BLACK_NIL, Self::BLACK_NIL) => {
                 if self.root == node_idx {
@@ -174,7 +201,7 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
     }
 
-    pub fn delete_black_leaf(&mut self, node_idx: usize) {
+    fn delete_black_leaf(&mut self, node_idx: usize) {
         let mut step = RosewoodDeletionStep::Starting;
         let mut curr_node = node_idx;
         let mut parent_idx = self.storage[curr_node].parent;
@@ -330,7 +357,7 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
     }
 
-    pub fn insert(&mut self, key: K) -> usize {
+    pub fn insert(&mut self, key: K) -> bool {
         let mut current_node = self.root;
         let mut parent_node = Self::BLACK_NIL;
 
@@ -340,6 +367,8 @@ impl<K: PartialEq + Ord> Rosewood<K> {
 
             if key < curr_node_storage.key {
                 current_node = curr_node_storage.left;
+            } else if key == curr_node_storage.key {
+                return false;
             } else {
                 current_node = curr_node_storage.right;
             }
@@ -361,7 +390,8 @@ impl<K: PartialEq + Ord> Rosewood<K> {
 
         self.fix_red_violation(new_node_pos);
 
-        return parent_node;
+        self.length += 1;
+        true
     }
 
     fn fix_red_violation(&mut self, start_node_idx: usize) {
@@ -473,6 +503,7 @@ impl<K: Default + PartialEq + Ord> Rosewood<K> {
     pub fn new() -> Self {
         Self {
             storage: alloc::vec![RosewoodNode::default()],
+            length: 0,
             root: Self::BLACK_NIL,
         }
     }
@@ -483,16 +514,35 @@ mod tests {
     use crate::Rosewood;
 
     #[test]
-    pub fn create_tree() {
-        let tree = Rosewood::<usize>::new();
+    pub fn root_removal() {
+        let mut tree = Rosewood::<usize>::new();
+
+        tree.insert(5);
+        tree.insert(6);
+        tree.insert(2);
+        tree.insert(19);
+        tree.insert(12);
+        tree.insert(4);
+
+        tree.remove(5);
+
+        assert_eq!(tree.storage[tree.root].key, 4);
     }
 
     #[test]
-    pub fn empty_tree_insertion() {
+    pub fn tree_length() {
         let mut tree = Rosewood::<usize>::new();
-        assert_eq!(tree.insert(5), 0);
-        assert_eq!(tree.insert(7), 1);
-        assert_eq!(tree.insert(9), 2);
-        assert_eq!(tree.insert(3), 1);
+
+        tree.insert(5);
+        tree.insert(4);
+        tree.insert(3);
+        tree.insert(3);
+
+        assert_eq!(tree.len(), 3);
+
+        tree.remove(4);
+        tree.remove(7);
+
+        assert_eq!(tree.len(), 2);
     }
 }
