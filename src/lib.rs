@@ -3,16 +3,12 @@ extern crate alloc;
 
 use core::{
     cmp::{Ordering, max, min},
-    mem::swap,
+    mem::{swap, take},
 };
 
 use alloc::vec::Vec;
 
 /*
-store the empty vector cells in a linked list. store head of linked list in Rosewood structure, and then
-- if you need a new cell, use the head of the linked list, new head is head = storage[head].parent
-- if you free a new cell, set storage[cell].parent = head, and then head = cell
-
 store color information in the parent key ? reduces number of usable positions, but that should be fine in most
 scenarios (with 64 bit usize, we can use 2^63 - 1 different keys).
 other options: bitmap, bool in every node,
@@ -82,8 +78,12 @@ pub struct Rosewood<K: PartialEq + Ord> {
 impl<K: PartialEq + Ord> Rosewood<K> {
     const BLACK_NIL: usize = 0;
 
-    pub fn contains(&self, key: K) -> bool {
+    pub fn contains(&self, key: &K) -> bool {
         return self.lookup(key) != Self::BLACK_NIL;
+    }
+
+    pub fn find_lower_bound(&self, target: &K) -> Option<&K> {
+        self.lower_bound(target).map(|idx| &self.storage[idx].key)
     }
 
     pub fn insert(&mut self, key: K) -> bool {
@@ -131,7 +131,39 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         self.length
     }
 
-    pub fn remove(&mut self, key: K) -> bool {
+    pub fn max(&self) -> Option<&K> {
+        let mut curr_elem = self.root;
+
+        if curr_elem == Self::BLACK_NIL {
+            return None;
+        }
+
+        loop {
+            if self.storage[curr_elem].right == Self::BLACK_NIL {
+                return Some(&self.storage[curr_elem].key);
+            }
+
+            curr_elem = self.storage[curr_elem].right;
+        }
+    }
+
+    pub fn min(&self) -> Option<&K> {
+        let mut curr_elem = self.root;
+
+        if curr_elem == Self::BLACK_NIL {
+            return None;
+        }
+
+        loop {
+            if self.storage[curr_elem].left == Self::BLACK_NIL {
+                return Some(&self.storage[curr_elem].key);
+            }
+
+            curr_elem = self.storage[curr_elem].left;
+        }
+    }
+
+    pub fn remove(&mut self, key: &K) -> bool {
         match self.lookup(key) {
             Self::BLACK_NIL => false,
             idx => {
@@ -140,6 +172,39 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                 true
             }
         }
+    }
+
+    fn lower_bound(&self, target: &K) -> Option<usize> {
+        let mut walker = self.root;
+        let mut best_fit_idx: Option<usize> = None;
+
+        while walker != Self::BLACK_NIL {
+            let walker_key = &self.storage[walker].key;
+
+            match walker_key.cmp(&target) {
+                Ordering::Less => {
+                    walker = self.storage[walker].right;
+                }
+                Ordering::Equal => {
+                    return Some(walker);
+                }
+                Ordering::Greater => {
+                    best_fit_idx = match best_fit_idx {
+                        Some(idx) => {
+                            if let Ordering::Less = walker_key.cmp(&self.storage[idx].key) {
+                                Some(walker)
+                            } else {
+                                Some(idx)
+                            }
+                        }
+                        None => Some(walker),
+                    };
+                    walker = self.storage[walker].left;
+                }
+            }
+        }
+
+        best_fit_idx
     }
 
     #[inline]
@@ -168,7 +233,7 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
     }
 
-    fn lookup(&self, key: K) -> usize {
+    fn lookup(&self, key: &K) -> usize {
         let mut current_node = self.root;
 
         while current_node != Self::BLACK_NIL {
@@ -542,6 +607,14 @@ impl<K: Default + PartialEq + Ord> Rosewood<K> {
             root: Self::BLACK_NIL,
         }
     }
+
+    pub fn extract_lower_bound(&mut self, target: &K) -> Option<K> {
+        let lower_bound = self.lower_bound(target)?;
+        let key = take(&mut self.storage[lower_bound].key);
+        self.delete(lower_bound);
+
+        Some(key)
+    }
 }
 
 #[cfg(test)]
@@ -559,9 +632,26 @@ mod tests {
         tree.insert(12);
         tree.insert(4);
 
-        tree.remove(5);
+        tree.remove(&5);
 
         assert_eq!(tree.storage[tree.root].key, 4);
+    }
+
+    #[test]
+    pub fn tree_min_max() {
+        let mut tree = Rosewood::<usize>::new();
+
+        tree.insert(5);
+        tree.insert(4);
+        tree.insert(3);
+        tree.insert(3);
+
+        assert_eq!(*tree.min().unwrap(), 3);
+
+        tree.remove(&3);
+        tree.remove(&5);
+
+        assert_eq!(*tree.max().unwrap(), 4);
     }
 
     #[test]
@@ -575,8 +665,8 @@ mod tests {
 
         assert_eq!(tree.len(), 3);
 
-        tree.remove(4);
-        tree.remove(7);
+        tree.remove(&4);
+        tree.remove(&7);
 
         assert_eq!(tree.len(), 2);
     }
