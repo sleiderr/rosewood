@@ -74,6 +74,7 @@ enum RosewoodDeletionStep {
 #[derive(Debug)]
 pub struct Rosewood<K: PartialEq + Ord> {
     storage: Vec<RosewoodNode<K>>,
+    free_nodes_head: usize,
     length: usize,
     root: usize,
 }
@@ -83,6 +84,43 @@ impl<K: PartialEq + Ord> Rosewood<K> {
 
     pub fn contains(&self, key: K) -> bool {
         return self.lookup(key) != Self::BLACK_NIL;
+    }
+
+    pub fn insert(&mut self, key: K) -> bool {
+        let mut current_node = self.root;
+        let mut parent_node = Self::BLACK_NIL;
+
+        while current_node != Self::BLACK_NIL {
+            parent_node = current_node;
+            let curr_node_storage = &self.storage[current_node];
+
+            if key < curr_node_storage.key {
+                current_node = curr_node_storage.left;
+            } else if key == curr_node_storage.key {
+                return false;
+            } else {
+                current_node = curr_node_storage.right;
+            }
+        }
+
+        let new_node_pos = self.find_free_slot_and_fill(key);
+
+        if parent_node == Self::BLACK_NIL {
+            self.root = new_node_pos;
+        } else if self.storage[new_node_pos].key < self.storage[parent_node].key {
+            self.storage[parent_node].left = new_node_pos;
+        } else {
+            self.storage[parent_node].right = new_node_pos;
+        }
+
+        self.storage[new_node_pos].parent = parent_node;
+        self.storage[new_node_pos].left = Self::BLACK_NIL;
+        self.storage[new_node_pos].right = Self::BLACK_NIL;
+
+        self.fix_red_violation(new_node_pos);
+
+        self.length += 1;
+        true
     }
 
     pub fn is_empty(&self) -> bool {
@@ -100,6 +138,32 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                 self.delete(idx);
 
                 true
+            }
+        }
+    }
+
+    #[inline]
+    fn insert_free_slot(&mut self, slot: usize) {
+        self.storage[slot].parent = self.free_nodes_head;
+
+        self.free_nodes_head = slot;
+    }
+
+    #[inline]
+    fn find_free_slot_and_fill(&mut self, key: K) -> usize {
+        match self.free_nodes_head {
+            Self::BLACK_NIL => {
+                self.storage.push(RosewoodNode::new_isolated(key));
+
+                self.storage.len() - 1
+            }
+            _ => {
+                let free_slot = self.free_nodes_head;
+
+                self.storage[free_slot].key = key;
+                self.free_nodes_head = self.storage[free_slot].parent;
+
+                free_slot
             }
         }
     }
@@ -133,6 +197,7 @@ impl<K: PartialEq + Ord> Rosewood<K> {
             (Self::BLACK_NIL, Self::BLACK_NIL) => {
                 if self.root == node_idx {
                     self.root = Self::BLACK_NIL;
+                    self.insert_free_slot(node_idx);
                 } else {
                     if matches!(self.storage[node_idx].color, NodeColor::Red) {
                         let parent_idx = self.storage[node_idx].parent;
@@ -143,6 +208,8 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                         } else {
                             parent.right = Self::BLACK_NIL;
                         }
+
+                        self.insert_free_slot(node_idx);
                     } else {
                         self.delete_black_leaf(node_idx);
                     }
@@ -166,11 +233,15 @@ impl<K: PartialEq + Ord> Rosewood<K> {
 
                 self.storage[single_child_idx].parent = parent_idx;
 
+                self.insert_free_slot(node_idx);
+
                 return;
             }
             (left_child_idx, _right_child_idx) => {
                 let succ = self.find_inorder_predecessor(left_child_idx);
                 self.swap_nodes(succ, node_idx);
+
+                self.insert_free_slot(succ);
             }
         }
     }
@@ -357,43 +428,6 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
     }
 
-    pub fn insert(&mut self, key: K) -> bool {
-        let mut current_node = self.root;
-        let mut parent_node = Self::BLACK_NIL;
-
-        while current_node != Self::BLACK_NIL {
-            parent_node = current_node;
-            let curr_node_storage = &self.storage[current_node];
-
-            if key < curr_node_storage.key {
-                current_node = curr_node_storage.left;
-            } else if key == curr_node_storage.key {
-                return false;
-            } else {
-                current_node = curr_node_storage.right;
-            }
-        }
-
-        let new_node_pos = self.storage.len();
-        let parent_node_storage = &mut self.storage[parent_node];
-
-        if parent_node == Self::BLACK_NIL {
-            self.root = new_node_pos;
-        } else if key < parent_node_storage.key {
-            parent_node_storage.left = new_node_pos;
-        } else {
-            parent_node_storage.right = new_node_pos;
-        }
-
-        self.storage.push(RosewoodNode::new_isolated(key));
-        self.storage[new_node_pos].parent = parent_node;
-
-        self.fix_red_violation(new_node_pos);
-
-        self.length += 1;
-        true
-    }
-
     fn fix_red_violation(&mut self, start_node_idx: usize) {
         let mut curr_node = start_node_idx;
         while matches!(
@@ -504,6 +538,7 @@ impl<K: Default + PartialEq + Ord> Rosewood<K> {
         Self {
             storage: alloc::vec![RosewoodNode::default()],
             length: 0,
+            free_nodes_head: 0,
             root: Self::BLACK_NIL,
         }
     }
