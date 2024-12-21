@@ -1,6 +1,9 @@
 extern crate alloc;
 
-use std::cmp::Ordering;
+use std::{
+    cmp::{Ordering, max, min},
+    mem::swap,
+};
 
 use alloc::vec::Vec;
 
@@ -14,7 +17,7 @@ scenarios (with 64 bit usize, we can use 2^63 - 1 different keys).
 other options: bitmap, bool in every node,
 */
 
-#[derive(Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 #[repr(u8)]
 enum NodeColor {
     #[default]
@@ -56,6 +59,18 @@ impl<K: Default> Default for RosewoodNode<K> {
 }
 
 #[derive(Debug)]
+enum RosewoodDeletionStep {
+    Starting,
+    Continue,
+    ParentBlackSiblingBlackChildrenBlack,
+    RedSibling,
+    ParentRedChildrenBlack,
+    CloseRedDistantBlack,
+    DistantRed,
+    Ended,
+}
+
+#[derive(Debug)]
 pub struct Rosewood<K: PartialEq + Ord> {
     storage: Vec<RosewoodNode<K>>,
     root: usize,
@@ -84,6 +99,235 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
 
         false
+    }
+
+    pub fn delete(&mut self, node_idx: usize) {
+        match (self.storage[node_idx].left, self.storage[node_idx].right) {
+            (Self::BLACK_NIL, Self::BLACK_NIL) => {
+                if self.root == node_idx {
+                    self.root = Self::BLACK_NIL;
+                } else {
+                    if matches!(self.storage[node_idx].color, NodeColor::Red) {
+                        let parent_idx = self.storage[node_idx].parent;
+                        let parent = &mut self.storage[parent_idx];
+
+                        if parent.left == node_idx {
+                            parent.left = Self::BLACK_NIL;
+                        } else {
+                            parent.right = Self::BLACK_NIL;
+                        }
+                    } else {
+                        self.delete_black_leaf(node_idx);
+                    }
+                }
+
+                return;
+            }
+            (single_child_idx, Self::BLACK_NIL) | (Self::BLACK_NIL, single_child_idx) => {
+                let parent_idx = self.storage[node_idx].parent;
+                let parent = &mut self.storage[parent_idx];
+
+                if parent.left == node_idx {
+                    parent.left = single_child_idx;
+                } else {
+                    parent.right = single_child_idx;
+                }
+
+                if self.root == node_idx {
+                    self.root = single_child_idx;
+                }
+
+                self.storage[single_child_idx].parent = parent_idx;
+
+                return;
+            }
+            (left_child_idx, _right_child_idx) => {
+                let succ = self.find_inorder_predecessor(left_child_idx);
+                self.swap_nodes(succ, node_idx);
+            }
+        }
+    }
+
+    fn swap_nodes(&mut self, node_a: usize, node_b: usize) {
+        if node_a == node_b {
+            return;
+        }
+
+        let (part_a, part_b) = self.storage.split_at_mut(min(node_a, node_b) + 1);
+
+        swap(
+            &mut part_a[part_a.len() - 1].key,
+            &mut part_b[max(node_a, node_b) - min(node_a, node_b) - 1].key,
+        );
+    }
+
+    fn find_inorder_predecessor(&self, subtree_root: usize) -> usize {
+        let mut curr_node = subtree_root;
+
+        loop {
+            let next_node = self.storage[curr_node].right;
+
+            if next_node == Self::BLACK_NIL {
+                return curr_node;
+            }
+            curr_node = next_node;
+        }
+    }
+
+    pub fn delete_black_leaf(&mut self, node_idx: usize) {
+        let mut step = RosewoodDeletionStep::Starting;
+        let mut curr_node = node_idx;
+        let mut parent_idx = self.storage[curr_node].parent;
+        let mut is_right_child = self.storage[parent_idx].right == curr_node;
+        let (mut sibling_idx, mut distant_nephew_idx, mut close_nephew_idx) =
+            (Self::BLACK_NIL, Self::BLACK_NIL, Self::BLACK_NIL);
+
+        loop {
+            match step {
+                RosewoodDeletionStep::Starting => {
+                    if is_right_child {
+                        self.storage[parent_idx].right = Self::BLACK_NIL;
+                    } else {
+                        self.storage[parent_idx].left = Self::BLACK_NIL;
+                    }
+                    step = RosewoodDeletionStep::Continue;
+                }
+                RosewoodDeletionStep::Continue => {
+                    parent_idx = self.storage[curr_node].parent;
+                    is_right_child = self.storage[parent_idx].right == curr_node;
+
+                    if is_right_child {
+                        self.storage[parent_idx].right = Self::BLACK_NIL;
+                    } else {
+                        self.storage[parent_idx].left = Self::BLACK_NIL;
+                    }
+
+                    (sibling_idx, distant_nephew_idx, close_nephew_idx) = if is_right_child {
+                        let sibling_idx = self.storage[parent_idx].left;
+                        (
+                            sibling_idx,
+                            self.storage[sibling_idx].left,
+                            self.storage[sibling_idx].right,
+                        )
+                    } else {
+                        let sibling_idx = self.storage[parent_idx].right;
+                        (
+                            sibling_idx,
+                            self.storage[sibling_idx].right,
+                            self.storage[sibling_idx].left,
+                        )
+                    };
+
+                    if matches!(self.storage[sibling_idx].color, NodeColor::Red) {
+                        step = RosewoodDeletionStep::RedSibling;
+                        continue;
+                    }
+
+                    if distant_nephew_idx != Self::BLACK_NIL
+                        && matches!(self.storage[distant_nephew_idx].color, NodeColor::Red)
+                    {
+                        step = RosewoodDeletionStep::DistantRed;
+                        continue;
+                    }
+
+                    if close_nephew_idx != Self::BLACK_NIL
+                        && matches!(self.storage[close_nephew_idx].color, NodeColor::Red)
+                    {
+                        step = RosewoodDeletionStep::CloseRedDistantBlack;
+                        continue;
+                    }
+
+                    if matches!(self.storage[parent_idx].color, NodeColor::Red) {
+                        step = RosewoodDeletionStep::ParentRedChildrenBlack;
+                        continue;
+                    }
+
+                    step = RosewoodDeletionStep::ParentBlackSiblingBlackChildrenBlack;
+                    continue;
+                }
+                RosewoodDeletionStep::ParentBlackSiblingBlackChildrenBlack => {
+                    self.storage[sibling_idx].color = NodeColor::Red;
+                    curr_node = parent_idx;
+
+                    step = RosewoodDeletionStep::Continue;
+                }
+                RosewoodDeletionStep::RedSibling => {
+                    if is_right_child {
+                        self.rotate_right(parent_idx);
+                    } else {
+                        self.rotate_left(parent_idx);
+                    }
+
+                    self.storage[parent_idx].color = NodeColor::Red;
+                    self.storage[sibling_idx].color = NodeColor::Black;
+
+                    sibling_idx = close_nephew_idx;
+                    distant_nephew_idx = if is_right_child {
+                        self.storage[sibling_idx].left
+                    } else {
+                        self.storage[sibling_idx].right
+                    };
+
+                    step = RosewoodDeletionStep::ParentRedChildrenBlack;
+
+                    if distant_nephew_idx != Self::BLACK_NIL
+                        && matches!(self.storage[distant_nephew_idx].color, NodeColor::Red)
+                    {
+                        step = RosewoodDeletionStep::DistantRed;
+                    }
+
+                    close_nephew_idx = if is_right_child {
+                        self.storage[sibling_idx].right
+                    } else {
+                        self.storage[sibling_idx].left
+                    };
+
+                    if close_nephew_idx != Self::BLACK_NIL
+                        && matches!(self.storage[close_nephew_idx].color, NodeColor::Red)
+                    {
+                        step = RosewoodDeletionStep::CloseRedDistantBlack;
+                    }
+
+                    continue;
+                }
+                RosewoodDeletionStep::ParentRedChildrenBlack => {
+                    self.storage[sibling_idx].color = NodeColor::Red;
+                    self.storage[parent_idx].color = NodeColor::Black;
+
+                    step = RosewoodDeletionStep::Ended;
+                    continue;
+                }
+                RosewoodDeletionStep::CloseRedDistantBlack => {
+                    if is_right_child {
+                        self.rotate_left(sibling_idx);
+                    } else {
+                        self.rotate_right(sibling_idx);
+                    }
+                    self.storage[sibling_idx].color = NodeColor::Red;
+                    self.storage[close_nephew_idx].color = NodeColor::Black;
+
+                    step = RosewoodDeletionStep::DistantRed;
+                    continue;
+                }
+                RosewoodDeletionStep::DistantRed => {
+                    if is_right_child {
+                        self.rotate_right(parent_idx);
+                    } else {
+                        self.rotate_left(parent_idx);
+                    }
+
+                    self.storage[sibling_idx].color = self.storage[parent_idx].color;
+                    self.storage[parent_idx].color = NodeColor::Black;
+                    self.storage[distant_nephew_idx].color = NodeColor::Black;
+
+                    step = RosewoodDeletionStep::Ended;
+                    continue;
+                }
+                RosewoodDeletionStep::Ended => {
+                    return;
+                }
+            }
+        }
     }
 
     pub fn insert(&mut self, key: K) -> usize {
