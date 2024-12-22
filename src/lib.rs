@@ -1,4 +1,3 @@
-#![no_std]
 extern crate alloc;
 
 mod iter;
@@ -34,6 +33,7 @@ enum NodeColor {
     #[default]
     Red,
     Black,
+    Free,
 }
 
 #[derive(Debug)]
@@ -214,14 +214,83 @@ impl<K: PartialEq + Ord> Rosewood<K> {
     }
 
     pub fn remove(&mut self, key: &K) -> bool {
-        match self.lookup(key) {
+        let removal_success = match self.lookup(key) {
             Self::BLACK_NIL => false,
             idx => {
                 self.delete(idx);
 
                 true
             }
+        };
+
+        if self.available_slots() > self.length {
+            self.shrink();
         }
+
+        removal_success
+    }
+
+    #[inline]
+    #[must_use]
+    fn available_slots(&self) -> usize {
+        self.storage.len() - self.length - 1
+    }
+
+    fn shrink(&mut self) {
+        let mid = (self.storage.len() >> 1) + 1;
+        let (front, back) = self.storage.split_at_mut(mid);
+
+        let mut front_idx = 1;
+
+        for idx in 0..back.len() {
+            if matches!(back[idx].color, NodeColor::Black | NodeColor::Red) {
+                loop {
+                    if matches!(front[front_idx].color, NodeColor::Free) {
+                        swap(&mut front[front_idx], &mut back[idx]);
+                        let parent_idx = front[front_idx].parent;
+                        let left_idx = front[front_idx].left;
+                        let right_idx = front[front_idx].right;
+
+                        if self.root == mid + idx {
+                            self.root = front_idx;
+                        }
+
+                        if parent_idx >= mid {
+                            if back[parent_idx - mid].right == mid + idx {
+                                back[parent_idx - mid].right = front_idx
+                            } else {
+                                back[parent_idx - mid].left = front_idx
+                            }
+                        } else {
+                            if front[parent_idx].right == mid + idx {
+                                front[parent_idx].right = front_idx
+                            } else {
+                                front[parent_idx].left = front_idx
+                            }
+                        }
+
+                        if left_idx >= mid {
+                            back[left_idx - mid].parent = front_idx;
+                        } else {
+                            front[left_idx].parent = front_idx;
+                        }
+
+                        if right_idx >= mid {
+                            back[right_idx - mid].parent = front_idx;
+                        } else {
+                            front[right_idx].parent = front_idx;
+                        }
+
+                        break;
+                    }
+
+                    front_idx += 1;
+                }
+            }
+        }
+
+        self.storage.truncate(mid + 1);
+        self.storage.shrink_to_fit();
     }
 
     fn lower_bound(&self, target: &K) -> Option<usize> {
@@ -260,6 +329,7 @@ impl<K: PartialEq + Ord> Rosewood<K> {
     #[inline]
     fn insert_free_slot(&mut self, slot: usize) {
         self.storage[slot].parent = self.free_nodes_head;
+        self.storage[slot].color = NodeColor::Free;
 
         self.free_nodes_head = slot;
     }
@@ -323,6 +393,7 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                     self.insert_free_slot(node_idx);
                 } else {
                     self.delete_black_leaf(node_idx);
+                    self.insert_free_slot(node_idx);
                 }
             }
             (single_child_idx, Self::BLACK_NIL) | (Self::BLACK_NIL, single_child_idx) => {
