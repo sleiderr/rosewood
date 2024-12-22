@@ -78,15 +78,27 @@ fn bench_random_deletions(mut tree: Rosewood<usize>, indices: Vec<usize>) {
     }
 }
 
-fn bench_baseline_random_lookups(mut tree: BTreeSet<usize>, indices: Vec<usize>) {
+fn bench_baseline_random_lookups(tree: BTreeSet<usize>, indices: Vec<usize>) {
     for idx in indices {
         assert!(tree.contains(&idx));
     }
 }
 
-fn bench_random_lookups(mut tree: Rosewood<usize>, indices: Vec<usize>) {
+fn bench_random_lookups(tree: Rosewood<usize>, indices: Vec<usize>) {
     for idx in indices {
         assert!(tree.contains(&idx));
+    }
+}
+
+fn inorder_iteration_btree(tree: BTreeSet<usize>) {
+    for (i, &elem) in tree.iter().enumerate() {
+        assert_eq!(i, elem);
+    }
+}
+
+fn inorder_iteration(tree: Rosewood<usize>) {
+    for (i, &elem) in tree.iter().enumerate() {
+        assert_eq!(i, elem);
     }
 }
 
@@ -143,6 +155,22 @@ fn rosewood_tree_benchmark(c: &mut Criterion) {
         b.iter_batched(
             || (init_large_rosewood_tree(), init_random_data()),
             |(tree, indices)| bench_random_deletions(tree, indices),
+            BatchSize::LargeInput,
+        )
+    });
+
+    c.bench_function("tree inorder iteration", |b| {
+        b.iter_batched(
+            || init_large_rosewood_tree(),
+            |tree| inorder_iteration(tree),
+            BatchSize::LargeInput,
+        )
+    });
+
+    c.bench_function("baseline tree inorder iteration", |b| {
+        b.iter_batched(
+            || init_large_btree(),
+            |tree| inorder_iteration_btree(tree),
             BatchSize::LargeInput,
         )
     });
