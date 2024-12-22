@@ -49,8 +49,30 @@ impl<K: Default + Ord, V> RosewoodMap<K, V> {
         }
     }
 
+    pub fn capacity(&self) -> usize {
+        self.tree.capacity()
+    }
+
     pub fn contains_key(&self, key: K) -> bool {
         self.tree.contains(&MapEntry { key, value: None })
+    }
+
+    pub fn find_next_greater(&self, target: K) -> Option<(&K, &V)> {
+        self.tree
+            .find_lower_bound(&MapEntry {
+                key: target,
+                value: None,
+            })
+            .and_then(|e| e.value.as_ref().map(|v| (&e.key, v)))
+    }
+
+    pub fn find_next_greater_mut(&mut self, target: K) -> Option<(&K, &mut V)> {
+        self.tree
+            .find_lower_bound_mut(&MapEntry {
+                key: target,
+                value: None,
+            })
+            .and_then(|e| e.value.as_mut().map(|v| (&e.key, v)))
     }
 
     pub fn insert(&mut self, key: K, value: V) -> bool {

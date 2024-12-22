@@ -92,6 +92,10 @@ pub struct Rosewood<K: PartialEq + Ord> {
 impl<K: PartialEq + Ord> Rosewood<K> {
     const BLACK_NIL: usize = 0;
 
+    pub fn capacity(&self) -> usize {
+        self.storage.capacity()
+    }
+
     pub fn contains(&self, key: &K) -> bool {
         self.lookup(key) != Self::BLACK_NIL
     }
