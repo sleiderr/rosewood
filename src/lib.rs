@@ -619,6 +619,10 @@ impl<K: Default + PartialEq + Ord> Rosewood<K> {
         }
     }
 
+    pub fn reserve(&mut self, cap: usize) {
+        self.storage.reserve(cap);
+    }
+
     pub fn extract_lower_bound(&mut self, target: &K) -> Option<K> {
         let lower_bound = self.lower_bound(target)?;
         let key = take(&mut self.storage[lower_bound].key);
