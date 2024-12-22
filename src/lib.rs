@@ -1,6 +1,12 @@
 #![no_std]
 extern crate alloc;
 
+mod map;
+
+pub mod containers {
+    pub use crate::map::RosewoodMap;
+}
+
 use core::{
     cmp::{Ordering, max, min},
     mem::{swap, take},
@@ -84,6 +90,11 @@ impl<K: PartialEq + Ord> Rosewood<K> {
 
     pub fn find_lower_bound(&self, target: &K) -> Option<&K> {
         self.lower_bound(target).map(|idx| &self.storage[idx].key)
+    }
+
+    pub fn find_lower_bound_mut(&mut self, target: &K) -> Option<&mut K> {
+        self.lower_bound(target)
+            .map(|idx| &mut self.storage[idx].key)
     }
 
     pub fn insert(&mut self, key: K) -> bool {
