@@ -1,4 +1,4 @@
-use core::marker::PhantomData;
+use core::{marker::PhantomData, ptr};
 
 use alloc::vec::Vec;
 
@@ -36,7 +36,7 @@ pub struct RosewoodSortedIteratorMut<'a, K: Ord> {
     pub(crate) phantom: PhantomData<&'a Rosewood<K>>,
 }
 
-impl<'a, K: Ord> RosewoodSortedIteratorMut<'a, K> {
+impl<K: Ord> RosewoodSortedIteratorMut<'_, K> {
     fn get_node_mut(&mut self, node_idx: usize) -> &mut RosewoodNode<K> {
         unsafe { &mut self.tree.as_mut().unwrap().storage[node_idx] }
     }
@@ -55,7 +55,7 @@ impl<'a, K: Ord> Iterator for RosewoodSortedIteratorMut<'a, K> {
             self.curr = self.get_node_mut(node).right;
             let key = unsafe { &mut (*self.tree).storage[node].key };
 
-            return Some(unsafe { &mut *(key as *mut _) });
+            return Some(unsafe { &mut *(ptr::from_mut(key)) });
         }
 
         None

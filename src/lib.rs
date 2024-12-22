@@ -16,6 +16,7 @@ use core::{
     cmp::{Ordering, max, min},
     marker::PhantomData,
     mem::{swap, take},
+    ptr,
 };
 
 use alloc::vec::Vec;
@@ -92,10 +93,11 @@ impl<K: PartialEq + Ord> Rosewood<K> {
     const BLACK_NIL: usize = 0;
 
     pub fn contains(&self, key: &K) -> bool {
-        return self.lookup(key) != Self::BLACK_NIL;
+        self.lookup(key) != Self::BLACK_NIL
     }
 
-    pub fn iter<'a>(&'a self) -> RosewoodSortedIterator<'a, K> {
+    #[must_use]
+    pub fn iter(&self) -> RosewoodSortedIterator<'_, K> {
         RosewoodSortedIterator {
             tree: self,
             curr: self.root,
@@ -103,12 +105,13 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
     }
 
-    pub fn iter_mut<'a>(&'a mut self) -> RosewoodSortedIteratorMut<'a, K> {
+    #[must_use]
+    pub fn iter_mut(&mut self) -> RosewoodSortedIteratorMut<'_, K> {
         RosewoodSortedIteratorMut {
-            tree: self as *mut _,
+            tree: ptr::from_mut(self),
             curr: self.root,
             stack: alloc::vec![],
-            phantom: PhantomData::default(),
+            phantom: PhantomData {},
         }
     }
 
@@ -129,12 +132,16 @@ impl<K: PartialEq + Ord> Rosewood<K> {
             parent_node = current_node;
             let curr_node_storage = &self.storage[current_node];
 
-            if key < curr_node_storage.key {
-                current_node = curr_node_storage.left;
-            } else if key == curr_node_storage.key {
-                return false;
-            } else {
-                current_node = curr_node_storage.right;
+            match key.cmp(&curr_node_storage.key) {
+                Ordering::Less => {
+                    current_node = curr_node_storage.left;
+                }
+                Ordering::Equal => {
+                    return false;
+                }
+                Ordering::Greater => {
+                    current_node = curr_node_storage.right;
+                }
             }
         }
 
@@ -158,14 +165,17 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         true
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.length == 0
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.length
     }
 
+    #[must_use]
     pub fn max(&self) -> Option<&K> {
         let mut curr_elem = self.root;
 
@@ -182,6 +192,7 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
     }
 
+    #[must_use]
     pub fn min(&self) -> Option<&K> {
         let mut curr_elem = self.root;
 
@@ -216,7 +227,7 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         while walker != Self::BLACK_NIL {
             let walker_key = &self.storage[walker].key;
 
-            match walker_key.cmp(&target) {
+            match walker_key.cmp(target) {
                 Ordering::Less => {
                     walker = self.storage[walker].right;
                 }
@@ -251,20 +262,17 @@ impl<K: PartialEq + Ord> Rosewood<K> {
 
     #[inline]
     fn find_free_slot_and_fill(&mut self, key: K) -> usize {
-        match self.free_nodes_head {
-            Self::BLACK_NIL => {
-                self.storage.push(RosewoodNode::new_isolated(key));
+        if self.free_nodes_head == Self::BLACK_NIL {
+            self.storage.push(RosewoodNode::new_isolated(key));
 
-                self.storage.len() - 1
-            }
-            _ => {
-                let free_slot = self.free_nodes_head;
+            self.storage.len() - 1
+        } else {
+            let free_slot = self.free_nodes_head;
 
-                self.storage[free_slot].key = key;
-                self.free_nodes_head = self.storage[free_slot].parent;
+            self.storage[free_slot].key = key;
+            self.free_nodes_head = self.storage[free_slot].parent;
 
-                free_slot
-            }
+            free_slot
         }
     }
 
@@ -298,24 +306,20 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                 if self.root == node_idx {
                     self.root = Self::BLACK_NIL;
                     self.insert_free_slot(node_idx);
-                } else {
-                    if matches!(self.storage[node_idx].color, NodeColor::Red) {
-                        let parent_idx = self.storage[node_idx].parent;
-                        let parent = &mut self.storage[parent_idx];
+                } else if matches!(self.storage[node_idx].color, NodeColor::Red) {
+                    let parent_idx = self.storage[node_idx].parent;
+                    let parent = &mut self.storage[parent_idx];
 
-                        if parent.left == node_idx {
-                            parent.left = Self::BLACK_NIL;
-                        } else {
-                            parent.right = Self::BLACK_NIL;
-                        }
-
-                        self.insert_free_slot(node_idx);
+                    if parent.left == node_idx {
+                        parent.left = Self::BLACK_NIL;
                     } else {
-                        self.delete_black_leaf(node_idx);
+                        parent.right = Self::BLACK_NIL;
                     }
-                }
 
-                return;
+                    self.insert_free_slot(node_idx);
+                } else {
+                    self.delete_black_leaf(node_idx);
+                }
             }
             (single_child_idx, Self::BLACK_NIL) | (Self::BLACK_NIL, single_child_idx) => {
                 let parent_idx = self.storage[node_idx].parent;
@@ -334,8 +338,6 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                 self.storage[single_child_idx].parent = parent_idx;
 
                 self.insert_free_slot(node_idx);
-
-                return;
             }
             (left_child_idx, _right_child_idx) => {
                 let succ = self.find_inorder_predecessor(left_child_idx);
@@ -597,14 +599,12 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         self.storage[center].parent = sibling_idx;
         self.storage[sibling_idx].parent = grandparent_idx;
 
-        if grandparent_idx != Self::BLACK_NIL {
-            if self.storage[grandparent_idx].right == center {
-                self.storage[grandparent_idx].right = sibling_idx;
-            } else {
-                self.storage[grandparent_idx].left = sibling_idx;
-            }
-        } else {
+        if grandparent_idx == Self::BLACK_NIL {
             self.root = sibling_idx;
+        } else if self.storage[grandparent_idx].right == center {
+            self.storage[grandparent_idx].right = sibling_idx;
+        } else {
+            self.storage[grandparent_idx].left = sibling_idx;
         }
     }
 
@@ -621,19 +621,38 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         self.storage[center].parent = sibling_idx;
         self.storage[sibling_idx].parent = grandparent_idx;
 
-        if grandparent_idx != Self::BLACK_NIL {
-            if self.storage[grandparent_idx].right == center {
-                self.storage[grandparent_idx].right = sibling_idx;
-            } else {
-                self.storage[grandparent_idx].left = sibling_idx;
-            }
-        } else {
+        if grandparent_idx == Self::BLACK_NIL {
             self.root = sibling_idx;
+        } else if self.storage[grandparent_idx].right == center {
+            self.storage[grandparent_idx].right = sibling_idx;
+        } else {
+            self.storage[grandparent_idx].left = sibling_idx;
         }
     }
 }
 
+impl<'a, K: Ord> IntoIterator for &'a Rosewood<K> {
+    type Item = &'a K;
+
+    type IntoIter = RosewoodSortedIterator<'a, K>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, K: Ord> IntoIterator for &'a mut Rosewood<K> {
+    type Item = &'a mut K;
+
+    type IntoIter = RosewoodSortedIteratorMut<'a, K>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
 impl<K: Default + PartialEq + Ord> Rosewood<K> {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             storage: alloc::vec![RosewoodNode::default()],
@@ -653,6 +672,12 @@ impl<K: Default + PartialEq + Ord> Rosewood<K> {
         self.delete(lower_bound);
 
         Some(key)
+    }
+}
+
+impl<K: Default + Ord> Default for Rosewood<K> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

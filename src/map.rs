@@ -8,8 +8,8 @@ struct MapEntry<K: Ord, V> {
 impl<K: Default + Ord, V> Default for MapEntry<K, V> {
     fn default() -> Self {
         Self {
-            key: Default::default(),
-            value: Default::default(),
+            key: K::default(),
+            value: Option::default(),
         }
     }
 }
@@ -24,7 +24,7 @@ impl<K: Ord, V> Eq for MapEntry<K, V> {}
 
 impl<K: Ord, V> PartialOrd for MapEntry<K, V> {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        self.key.partial_cmp(&other.key)
+        Some(self.key.cmp(&other.key))
     }
 }
 
@@ -42,6 +42,7 @@ pub struct RosewoodMap<K: Ord, V> {
 }
 
 impl<K: Default + Ord, V> RosewoodMap<K, V> {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             tree: Rosewood::new(),
@@ -79,12 +80,20 @@ impl<K: Default + Ord, V> RosewoodMap<K, V> {
             .as_mut()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.tree.len() == 0
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.tree.len()
+    }
+}
+
+impl<K: Default + Ord, V> Default for RosewoodMap<K, V> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
