@@ -1,7 +1,12 @@
 #![no_std]
 extern crate alloc;
 
+mod iter;
 mod map;
+
+pub mod iterators {
+    pub use crate::iter::*;
+}
 
 pub mod containers {
     pub use crate::map::RosewoodMap;
@@ -9,10 +14,12 @@ pub mod containers {
 
 use core::{
     cmp::{Ordering, max, min},
+    marker::PhantomData,
     mem::{swap, take},
 };
 
 use alloc::vec::Vec;
+use iter::{RosewoodSortedIterator, RosewoodSortedIteratorMut};
 
 /*
 store color information in the parent key ? reduces number of usable positions, but that should be fine in most
@@ -86,6 +93,23 @@ impl<K: PartialEq + Ord> Rosewood<K> {
 
     pub fn contains(&self, key: &K) -> bool {
         return self.lookup(key) != Self::BLACK_NIL;
+    }
+
+    pub fn iter<'a>(&'a self) -> RosewoodSortedIterator<'a, K> {
+        RosewoodSortedIterator {
+            tree: self,
+            curr: self.root,
+            stack: alloc::vec![],
+        }
+    }
+
+    pub fn iter_mut<'a>(&'a mut self) -> RosewoodSortedIteratorMut<'a, K> {
+        RosewoodSortedIteratorMut {
+            tree: self as *mut _,
+            curr: self.root,
+            stack: alloc::vec![],
+            phantom: PhantomData::default(),
+        }
     }
 
     pub fn find_lower_bound(&self, target: &K) -> Option<&K> {
