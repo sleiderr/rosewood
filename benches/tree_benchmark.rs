@@ -2,6 +2,7 @@ use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use rand::prelude::*;
 use rosewood::Rosewood;
 use std::collections::BTreeSet;
+use std::ops::Range;
 
 fn bench_baseline_multi_insertions(data: Vec<usize>) {
     let mut tree = BTreeSet::new();
@@ -57,11 +58,12 @@ fn random_insertion_order() -> Vec<usize> {
     indices
 }
 
-fn init_random_data() -> Vec<usize> {
+fn init_random_data(count: usize, range_opt: Option<Range<usize>>) -> Vec<usize> {
     let mut rng = rand::thread_rng();
-    let range = rand::distributions::Uniform::new(0, 100000);
+    let range = range_opt.unwrap_or(0..100000);
+    let range = rand::distributions::Uniform::new(range.start, range.end);
 
-    let indices: Vec<usize> = (0..5000).map(|_| rng.sample(&range)).collect();
+    let indices: Vec<usize> = (0..count).map(|_| rng.sample(&range)).collect();
 
     indices
 }
@@ -102,7 +104,68 @@ fn inorder_iteration(tree: Rosewood<usize>) {
     }
 }
 
+mod insert_delete {
+    use super::*;
+    use rosewood::Rosewood;
+
+    pub fn bench_insert_delete(
+        mut tree: Rosewood<usize>,
+        insertions: &Vec<usize>,
+        deletions: &Vec<usize>,
+    ) {
+        for idx in 0..deletions.len() {
+            tree.remove(&deletions[idx]);
+        }
+        for idx in 0..insertions.len() {
+            tree.insert(insertions[idx]);
+        }
+    }
+
+    pub fn bench_baseline_insert_delete(
+        mut tree: BTreeSet<usize>,
+        insertions: &Vec<usize>,
+        deletions: &Vec<usize>,
+    ) {
+        for idx in 0..deletions.len() {
+            tree.remove(&deletions[idx]);
+        }
+        for idx in 0..insertions.len() {
+            tree.insert(insertions[idx]);
+        }
+    }
+}
+
 fn rosewood_tree_benchmark(c: &mut Criterion) {
+    c.bench_function("baseline tree insert delete", |b| {
+        b.iter_batched(
+            || {
+                (
+                    init_large_btree(),
+                    init_random_data(2000, Some(100000..300000)),
+                    init_random_data(2000, Some(0..100000)),
+                )
+            },
+            |(tree, holes, to_insert)| {
+                insert_delete::bench_baseline_insert_delete(tree, &holes, &to_insert)
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
+    c.bench_function("tree insert delete", |b| {
+        b.iter_batched(
+            || {
+                (
+                    init_large_rosewood_tree(),
+                    init_random_data(2000, Some(100000..300000)),
+                    init_random_data(2000, Some(0..100000)),
+                )
+            },
+            |(tree, holes, to_insert)| insert_delete::bench_insert_delete(tree, &holes, &to_insert),
+            BatchSize::LargeInput,
+        )
+    });
+
     c.bench_function("baseline tree 100K insertions", |b| {
         b.iter_batched(
             || random_insertion_order(),
@@ -129,7 +192,7 @@ fn rosewood_tree_benchmark(c: &mut Criterion) {
 
     c.bench_function("baseline tree random lookups", |b| {
         b.iter_batched(
-            || (init_large_btree(), init_random_data()),
+            || (init_large_btree(), init_random_data(5000, None)),
             |(tree, indices)| bench_baseline_random_lookups(tree, indices),
             BatchSize::LargeInput,
         )
@@ -137,7 +200,7 @@ fn rosewood_tree_benchmark(c: &mut Criterion) {
 
     c.bench_function("tree random lookups", |b| {
         b.iter_batched(
-            || (init_large_rosewood_tree(), init_random_data()),
+            || (init_large_rosewood_tree(), init_random_data(5000, None)),
             |(tree, indices)| bench_random_lookups(tree, indices),
             BatchSize::LargeInput,
         )
@@ -145,7 +208,7 @@ fn rosewood_tree_benchmark(c: &mut Criterion) {
 
     c.bench_function("baseline tree random deletions", |b| {
         b.iter_batched(
-            || (init_large_btree(), init_random_data()),
+            || (init_large_btree(), init_random_data(5000, None)),
             |(tree, indices)| bench_baseline_random_deletions(tree, indices),
             BatchSize::LargeInput,
         )
@@ -153,7 +216,7 @@ fn rosewood_tree_benchmark(c: &mut Criterion) {
 
     c.bench_function("tree random deletions", |b| {
         b.iter_batched(
-            || (init_large_rosewood_tree(), init_random_data()),
+            || (init_large_rosewood_tree(), init_random_data(5000, None)),
             |(tree, indices)| bench_random_deletions(tree, indices),
             BatchSize::LargeInput,
         )

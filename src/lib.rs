@@ -27,7 +27,7 @@ scenarios (with 64 bit usize, we can use 2^63 - 1 different keys).
 other options: bitmap, bool in every node,
 */
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(u8)]
 enum NodeColor {
     #[default]
@@ -73,6 +73,7 @@ impl<K: Default> Default for RosewoodNode<K> {
 enum RosewoodDeletionStep {
     Starting,
     Continue,
+    UpdateVariables,
     ParentBlackSiblingBlackChildrenBlack,
     RedSibling,
     ParentRedChildrenBlack,
@@ -411,16 +412,20 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                 }
 
                 self.storage[single_child_idx].parent = parent_idx;
+                self.storage[single_child_idx].color = NodeColor::Black;
 
                 self.insert_free_slot(node_idx);
             }
             (left_child_idx, _right_child_idx) => {
+                self.length += 1;
                 let succ = self.find_inorder_predecessor(left_child_idx);
                 self.swap_nodes(succ, node_idx);
 
-                self.insert_free_slot(succ);
+                self.delete(succ);
             }
         }
+
+        debug_assert!(self.storage[Self::BLACK_NIL].color == NodeColor::Black);
     }
 
     fn swap_nodes(&mut self, node_a: usize, node_b: usize) {
@@ -465,17 +470,14 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                     } else {
                         self.storage[parent_idx].left = Self::BLACK_NIL;
                     }
-                    step = RosewoodDeletionStep::Continue;
+                    step = RosewoodDeletionStep::UpdateVariables;
                 }
                 RosewoodDeletionStep::Continue => {
-                    parent_idx = self.storage[curr_node].parent;
                     is_right_child = self.storage[parent_idx].right == curr_node;
-
-                    if is_right_child {
-                        self.storage[parent_idx].right = Self::BLACK_NIL;
-                    } else {
-                        self.storage[parent_idx].left = Self::BLACK_NIL;
-                    }
+                    step = RosewoodDeletionStep::UpdateVariables;
+                }
+                RosewoodDeletionStep::UpdateVariables => {
+                    parent_idx = self.storage[curr_node].parent;
 
                     (sibling_idx, distant_nephew_idx, close_nephew_idx) = if is_right_child {
                         let sibling_idx = self.storage[parent_idx].left;
@@ -492,6 +494,11 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                             self.storage[sibling_idx].left,
                         )
                     };
+
+                    if parent_idx == Self::BLACK_NIL {
+                        step = RosewoodDeletionStep::Ended;
+                        continue;
+                    }
 
                     if matches!(self.storage[sibling_idx].color, NodeColor::Red) {
                         step = RosewoodDeletionStep::RedSibling;
@@ -521,7 +528,9 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                     continue;
                 }
                 RosewoodDeletionStep::ParentBlackSiblingBlackChildrenBlack => {
-                    self.storage[sibling_idx].color = NodeColor::Red;
+                    if sibling_idx != Self::BLACK_NIL {
+                        self.storage[sibling_idx].color = NodeColor::Red;
+                    }
                     curr_node = parent_idx;
 
                     step = RosewoodDeletionStep::Continue;
@@ -536,7 +545,19 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                     self.storage[parent_idx].color = NodeColor::Red;
                     self.storage[sibling_idx].color = NodeColor::Black;
 
-                    sibling_idx = close_nephew_idx;
+                    sibling_idx = if is_right_child {
+                        self.storage[parent_idx].left
+                    } else {
+                        self.storage[parent_idx].right
+                    };
+
+                    if sibling_idx == Self::BLACK_NIL {
+                        step = RosewoodDeletionStep::Ended;
+                        continue;
+                    }
+
+                    assert_ne!(sibling_idx, Self::BLACK_NIL);
+
                     distant_nephew_idx = if is_right_child {
                         self.storage[sibling_idx].left
                     } else {
@@ -566,7 +587,9 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                     continue;
                 }
                 RosewoodDeletionStep::ParentRedChildrenBlack => {
-                    self.storage[sibling_idx].color = NodeColor::Red;
+                    if sibling_idx != Self::BLACK_NIL {
+                        self.storage[sibling_idx].color = NodeColor::Red;
+                    }
                     self.storage[parent_idx].color = NodeColor::Black;
 
                     step = RosewoodDeletionStep::Ended;
@@ -580,6 +603,9 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                     }
                     self.storage[sibling_idx].color = NodeColor::Red;
                     self.storage[close_nephew_idx].color = NodeColor::Black;
+
+                    distant_nephew_idx = sibling_idx;
+                    sibling_idx = close_nephew_idx;
 
                     step = RosewoodDeletionStep::DistantRed;
                     continue;
@@ -659,16 +685,32 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                 self.rotate_right(grandparent_idx);
             }
         }
+
+        self.storage[self.root].color = NodeColor::Black;
     }
 
     fn rotate_left(&mut self, center: usize) {
+        debug_assert_ne!(
+            center,
+            Self::BLACK_NIL,
+            "Attempted to left rotate around NIL node"
+        );
+
         let grandparent_idx = self.storage[center].parent;
         let sibling_idx = self.storage[center].right;
+
+        debug_assert_ne!(
+            sibling_idx,
+            Self::BLACK_NIL,
+            "Attempted to left rotate around {center} with NIL sibling"
+        );
 
         let c_idx = self.storage[sibling_idx].left;
 
         self.storage[center].right = c_idx;
-        self.storage[c_idx].parent = center;
+        if c_idx != Self::BLACK_NIL {
+            self.storage[c_idx].parent = center;
+        }
 
         self.storage[sibling_idx].left = center;
         self.storage[center].parent = sibling_idx;
@@ -684,13 +726,27 @@ impl<K: PartialEq + Ord> Rosewood<K> {
     }
 
     fn rotate_right(&mut self, center: usize) {
+        debug_assert_ne!(
+            center,
+            Self::BLACK_NIL,
+            "Attempted to right rotate around NIL node"
+        );
+
         let grandparent_idx = self.storage[center].parent;
         let sibling_idx = self.storage[center].left;
+
+        debug_assert_ne!(
+            sibling_idx,
+            Self::BLACK_NIL,
+            "Attempted to right rotate around {center} with NIL sibling"
+        );
 
         let c_idx = self.storage[sibling_idx].right;
 
         self.storage[center].left = c_idx;
-        self.storage[c_idx].parent = center;
+        if c_idx != Self::BLACK_NIL {
+            self.storage[c_idx].parent = center;
+        }
 
         self.storage[sibling_idx].right = center;
         self.storage[center].parent = sibling_idx;
@@ -759,6 +815,7 @@ impl<K: Default + Ord> Default for Rosewood<K> {
 #[cfg(test)]
 mod tests {
     use crate::Rosewood;
+    use rand::prelude::*;
 
     #[test]
     pub fn root_removal() {
@@ -808,5 +865,93 @@ mod tests {
         tree.remove(&7);
 
         assert_eq!(tree.len(), 2);
+    }
+
+    #[test]
+    pub fn random_order_insertion() {
+        let mut rng = rand::thread_rng();
+        let mut indices: Vec<usize> = (0..10000).collect();
+
+        indices.shuffle(&mut rng);
+
+        let mut tree = Rosewood::<usize>::new();
+
+        for &idx in &indices {
+            tree.insert(idx);
+        }
+
+        for idx in &indices {
+            assert!(tree.contains(idx));
+        }
+    }
+
+    #[test]
+    pub fn random_order_insertion_then_deletions() {
+        let mut rng = rand::thread_rng();
+        let mut indices: Vec<usize> = (0..10).collect();
+
+        indices.shuffle(&mut rng);
+
+        let mut tree = Rosewood::<usize>::new();
+
+        for &idx in &indices {
+            tree.insert(idx);
+        }
+
+        let mut rng = rand::thread_rng();
+        let range = rand::distributions::Uniform::new(0, 10);
+
+        let deletion_indices: Vec<usize> = (0..5).map(|_| rng.sample(&range)).collect();
+
+        for idx in 0..deletion_indices.len() {
+            tree.remove(&deletion_indices[idx]);
+
+            assert!(
+                !tree.contains(&deletion_indices[idx]),
+                "FAILED DELETION {} {:?} root = {}",
+                deletion_indices[idx],
+                tree.storage,
+                tree.root
+            );
+        }
+    }
+
+    #[test]
+    pub fn random_order_simultaneous_insertion_deletions() {
+        let mut rng = rand::thread_rng();
+        let mut indices: Vec<usize> = (0..100000).collect();
+
+        indices.shuffle(&mut rng);
+
+        let mut tree = Rosewood::<usize>::new();
+
+        for &idx in &indices {
+            tree.insert(idx);
+        }
+
+        let mut rng = rand::thread_rng();
+        let range = rand::distributions::Uniform::new(0, 100000);
+
+        let deletion_indices: Vec<usize> = (0..200000).map(|_| rng.sample(&range)).collect();
+        let insertion_indices: Vec<usize> = (0..200000).map(|_| rng.sample(&range)).collect();
+
+        for idx in 0..insertion_indices.len() {
+            tree.insert(insertion_indices[idx]);
+
+            tree.remove(&deletion_indices[idx]);
+            assert!(
+                deletion_indices[idx] == insertion_indices[idx]
+                    || tree.contains(&insertion_indices[idx]),
+                "FAILED INSERTION at insertion = {}, deletion = {}",
+                insertion_indices[idx],
+                deletion_indices[idx],
+            );
+            assert!(
+                !tree.contains(&deletion_indices[idx]),
+                "FAILED DELETION at insertion = {}, deletion = {}",
+                insertion_indices[idx],
+                deletion_indices[idx]
+            );
+        }
     }
 }
