@@ -163,6 +163,7 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         self.storage[new_node_pos].parent = parent_node;
         self.storage[new_node_pos].left = Self::BLACK_NIL;
         self.storage[new_node_pos].right = Self::BLACK_NIL;
+        self.storage[new_node_pos].color = NodeColor::Red;
 
         self.fix_red_violation(new_node_pos);
 
@@ -256,30 +257,36 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                             self.root = front_idx;
                         }
 
-                        if parent_idx >= mid {
-                            if back[parent_idx - mid].right == mid + idx {
-                                back[parent_idx - mid].right = front_idx
+                        if parent_idx != Self::BLACK_NIL {
+                            if parent_idx >= mid {
+                                if back[parent_idx - mid].right == mid + idx {
+                                    back[parent_idx - mid].right = front_idx
+                                } else {
+                                    back[parent_idx - mid].left = front_idx
+                                }
                             } else {
-                                back[parent_idx - mid].left = front_idx
-                            }
-                        } else {
-                            if front[parent_idx].right == mid + idx {
-                                front[parent_idx].right = front_idx
-                            } else {
-                                front[parent_idx].left = front_idx
+                                if front[parent_idx].right == mid + idx {
+                                    front[parent_idx].right = front_idx
+                                } else {
+                                    front[parent_idx].left = front_idx
+                                }
                             }
                         }
 
-                        if left_idx >= mid {
-                            back[left_idx - mid].parent = front_idx;
-                        } else {
-                            front[left_idx].parent = front_idx;
+                        if left_idx != Self::BLACK_NIL {
+                            if left_idx >= mid {
+                                back[left_idx - mid].parent = front_idx;
+                            } else {
+                                front[left_idx].parent = front_idx;
+                            }
                         }
 
-                        if right_idx >= mid {
-                            back[right_idx - mid].parent = front_idx;
-                        } else {
-                            front[right_idx].parent = front_idx;
+                        if right_idx != Self::BLACK_NIL {
+                            if right_idx >= mid {
+                                back[right_idx - mid].parent = front_idx;
+                            } else {
+                                front[right_idx].parent = front_idx;
+                            }
                         }
 
                         break;
@@ -292,6 +299,19 @@ impl<K: PartialEq + Ord> Rosewood<K> {
 
         self.storage.truncate(mid + 1);
         self.storage.shrink_to_fit();
+
+        self.rebuild_free_nodes_list();
+    }
+
+    fn rebuild_free_nodes_list(&mut self) {
+        self.free_nodes_head = 0;
+
+        for (idx, slot) in self.storage.iter_mut().enumerate() {
+            if matches!(slot.color, NodeColor::Free) {
+                swap(&mut self.free_nodes_head, &mut slot.parent);
+                self.free_nodes_head = idx;
+            }
+        }
     }
 
     fn lower_bound(&self, target: &K) -> Option<usize> {
@@ -401,10 +421,12 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                 let parent_idx = self.storage[node_idx].parent;
                 let parent = &mut self.storage[parent_idx];
 
-                if parent.left == node_idx {
-                    parent.left = single_child_idx;
-                } else {
-                    parent.right = single_child_idx;
+                if parent_idx != Self::BLACK_NIL {
+                    if parent.left == node_idx {
+                        parent.left = single_child_idx;
+                    } else {
+                        parent.right = single_child_idx;
+                    }
                 }
 
                 if self.root == node_idx {

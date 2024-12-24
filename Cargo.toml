@@ -7,6 +7,10 @@ edition = "2024"
 criterion = { version = "0.5", features = ["html_reports"] }
 rand = { version = "0.8" }
 
+[profile.release]
+opt-level = 3
+
 [[bench]]
 name = "tree_benchmark"
 harness = false
+opt-level = 3
