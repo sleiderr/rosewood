@@ -1,13 +1,38 @@
+//! Rosewood is a classical Red-Black tree.
+//!
+//! This crate provides an efficient implementation of a Red-black tree, as well as several other
+//! types of containers derived from the base structure [`Rosewood`].
+//!
+//! A **red-black tree** is a self-balancing binary search tree where each node contains an additional
+//! color attribute, either **red** or **black**. It ensures efficient data operations by maintaining
+//! specific balance properties:
+//!
+//! 1. Each node is either red or black.
+//! 2. The root node is always black.
+//! 3. Red nodes cannot have red children (no two consecutive red nodes).
+//! 4. Every path from a node to its descendant null pointers contains the same number of black nodes (black-height).
+//!
+//! These properties ensure that the tree's height is logarithmic relative to the number of nodes, guaranteeing
+//! ***O*(*log n*)** complexity for insertion, deletion, and search operations.
+//!
+//! # Containers
+//!
+//! The containers derived from [`Rosewood`] are all sorted.
+//!
+//! - [`RosewoodMap`](containers::RosewoodMap) : a sorted key-value associative array
+
 extern crate alloc;
 
 mod iter;
 mod map;
 
 pub mod iterators {
+    //! Sorted iterators over the containers in this crate.
     pub use crate::iter::*;
 }
 
 pub mod containers {
+    //! Containers derived from the base structure [`Rosewood`](crate::Rosewood).
     pub use crate::map::RosewoodMap;
 }
 
@@ -17,19 +42,20 @@ use core::{
     mem::{swap, take},
     ptr,
 };
-use std::ops::{Add, Sub};
+use std::{
+    borrow::Borrow,
+    ops::{Add, Sub},
+};
 
 use alloc::vec::Vec;
 use iter::{RosewoodSortedIterator, RosewoodSortedIteratorMut};
 
-/*
-store color information in the parent key ? reduces number of usable positions, but that should be fine in most
-scenarios (with 64 bit usize, we can use 2^63 - 1 different keys).
-other options: bitmap, bool in every node,
-*/
-
+/// Uniquely represents a node in the tree.
+///
+/// Corresponds to the index of the node in the node storage, it is used instead of pointers in
+/// usual Red-Black tree implementations.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct NodeIndex(pub usize);
+pub(crate) struct NodeIndex(pub usize);
 
 impl Add<usize> for NodeIndex {
     type Output = NodeIndex;
@@ -78,6 +104,9 @@ enum NodeColor {
     Free,
 }
 
+/// Rosewood red-black tree nodes.
+///
+/// Stores a pointer to the parent alongside pointers to the two children.
 #[derive(Debug)]
 struct RosewoodNode<K> {
     key: K,
@@ -143,6 +172,7 @@ impl<K: Default> Default for RosewoodNode<K> {
     }
 }
 
+/// List of steps for the deletion algorithm, when deleting a black leaf.
 #[derive(Debug)]
 enum RosewoodDeletionStep {
     Starting,
@@ -156,6 +186,7 @@ enum RosewoodDeletionStep {
     Ended,
 }
 
+/// List of steps for the insertion algorithm, to restore the Red-Black tree properties.
 #[derive(Debug)]
 enum RosewoodInsertionStep {
     Running,
@@ -165,25 +196,120 @@ enum RosewoodInsertionStep {
     Ended,
 }
 
+/// A Red-Black Tree implementation.
+///
+/// It can store any type of key that implements the [`Ord`] trait.
+/// It uses a linear buffer to store the tree nodes, and a shrinking operation is performed when
+/// the number of unused nodes gets too high.
+///
+/// This structure is particularly optimized for frequent insertion / deletion, but with no
+/// significant move of the total number of nodes.
+///
+/// # Examples
+///
+/// ```
+/// use rosewood::Rosewood;
+///
+/// let mut tree: Rosewood<usize> = Rosewood::new();
+///
+/// tree.insert(3);
+/// tree.insert(5);
+/// tree.insert(1);
+/// tree.insert(8);
+///
+/// if !tree.contains(&3) {
+///     println!("Map contains key 3 !");
+/// }
+///
+/// // Iterate over the keys in the tree in sorted order.
+/// for (idx, value) in tree.iter().enumerate() {
+///     println!("Key {idx}: {value}");
+/// }
+///
+/// ```
+///
+/// # Time complexity
+///
+/// |                | get(i)                 | insert(i)               | remove(i)              | min / max          |
+/// |----------------|------------------------|-------------------------|------------------------|------------------- |
+/// | [`Rosewood`]   | *O*(*log(n)*)          | *O*(*log(n)*)           | *O*(*log(n)*)          | *O*(*log(n)*)      |
+///
+/// Remove and insert are *O*(*log(n)*) in the average case, with occasional resizing of the node
+/// buffer in *O*(*n*) that are amortized.
 #[derive(Debug)]
-pub struct Rosewood<K: PartialEq + Ord> {
+pub struct Rosewood<K: Ord> {
     storage: Vec<RosewoodNode<K>>,
     free_nodes_head: NodeIndex,
-    length: usize,
     root: NodeIndex,
+    length: usize,
 }
 
 impl<K: PartialEq + Ord> Rosewood<K> {
     const BLACK_NIL: NodeIndex = NodeIndex(0);
 
+    /// Returns the capacity of the tree.
+    ///
+    /// The capacity is the number of used nodes, as well as the number of freed nodes that were
+    /// not yet deallocated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rosewood::Rosewood;
+    ///
+    /// let mut tree = Rosewood::new();
+    ///
+    /// assert_eq!(tree.capacity(), 0);
+    /// tree.insert(1);
+    /// assert_eq!(tree.capacity(), 1);
+    ///
+    /// tree.remove(&1);
+    /// assert_eq!(tree.capacity(), 1);
+    /// ```
     pub fn capacity(&self) -> usize {
         self.storage.capacity()
     }
 
-    pub fn contains(&self, key: &K) -> bool {
-        self.lookup(key) != Self::BLACK_NIL
+    /// Returns `true` if the tree contains an element equal to `key`.
+    ///
+    /// The type of `key` must be a borrowed from of `K`, and the ordering must match the one
+    /// on `K`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rosewood::Rosewood;
+    ///
+    /// let mut tree = Rosewood::new();
+    ///
+    /// tree.insert(1);
+    ///
+    /// assert!(tree.contains(&1));
+    /// ```
+    pub fn contains<Q>(&self, key: &Q) -> bool
+    where
+        Q: Borrow<K> + Ord,
+    {
+        self.lookup(key.borrow()) != Self::BLACK_NIL
     }
 
+    /// Returns an iterator that visits the element in the tree in ascending order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rosewood::Rosewood
+    ///
+    /// let mut tree = Rosewood::new();
+    ///
+    /// tree.insert(1);
+    /// tree.insert(3);
+    /// tree.insert(2);
+    ///
+    /// for (idx, elem) in tree.iter().enumerate() {
+    ///     println!("Element {idx} is {elem}");
+    /// }
+    /// ```
     #[must_use]
     pub fn iter(&self) -> RosewoodSortedIterator<'_, K> {
         RosewoodSortedIterator {
@@ -193,6 +319,26 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
     }
 
+    /// Returns an iterator that yields mutable references to the element in the tree in ascending order.
+    ///
+    /// The ordering must remain consistent after updating the keys inside the tree.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rosewood::Rosewood
+    ///
+    /// let mut tree = Rosewood::new();
+    ///
+    /// tree.insert(1);
+    /// tree.insert(3);
+    /// tree.insert(2);
+    ///
+    /// // Multiply all the elements in the tree by 2.
+    /// for (idx, elem) in tree.iter_mut().enumerate() {
+    ///     *elem *= 2;
+    /// }
+    /// ```
     #[must_use]
     pub fn iter_mut(&mut self) -> RosewoodSortedIteratorMut<'_, K> {
         RosewoodSortedIteratorMut {
@@ -203,16 +349,70 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
     }
 
-    pub fn find_lower_bound(&self, target: &K) -> Option<&K> {
-        self.lower_bound(target)
+    /// Returns the smallest key greater than `target` in the tree, if it exists.
+    ///
+    /// The type of `key` must be a borrowed from of `K`, and the ordering must match the one
+    /// on `K`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rosewood::Rosewood;
+    ///
+    /// let mut tree = Rosewood::new();
+    ///
+    /// tree.insert(1);
+    /// tree.insert(4);
+    ///
+    /// assert_eq!(*tree.find_lower_bound(&3), 4);
+    /// ```
+    pub fn find_lower_bound<Q>(&self, target: &Q) -> Option<&K>
+    where
+        Q: Borrow<K> + Ord,
+    {
+        self.lower_bound(target.borrow())
             .map(|idx| &self.get_node_by_idx(idx).key)
     }
 
+    /// Returns a mutable reference to the smallest key greater than `target` in the tree, if it exists.
+    ///
+    /// Any update on the key must not change its position in the tree ordering.
+    ///
+    /// The type of `key` must be a borrowed from of `K`, and the ordering must match the one
+    /// on `K`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rosewood::Rosewood;
+    ///
+    /// let mut tree = Rosewood::new();
+    ///
+    /// tree.insert(1);
+    /// tree.insert(4);
+    ///
+    /// assert_eq!(*tree.find_lower_bound_mut(&3), 4);
+    /// ```
     pub fn find_lower_bound_mut(&mut self, target: &K) -> Option<&mut K> {
         self.lower_bound(target)
             .map(|idx| &mut self.get_node_by_idx_mut(idx).key)
     }
 
+    /// Adds a value to the tree.
+    ///
+    /// Returns whether the new value was actually inserted in the tree (if it was not present
+    /// already in the tree).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rosewood::Rosewood;
+    ///
+    /// let mut tree = Rosewood::new();
+    ///
+    /// assert!(tree.insert(1));
+    /// assert!(!tree.insert(1));
+    /// ```
     pub fn insert(&mut self, key: K) -> bool {
         let mut current_node = self.root;
         let mut parent_node = Self::BLACK_NIL;
@@ -260,16 +460,58 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         true
     }
 
+    /// Returns `true` if the tree contains no element.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rosewood::Rosewood;
+    ///
+    /// let mut tree = Rosewood::new();
+    ///
+    /// assert!(tree.is_empty());
+    ///
+    /// tree.insert(1);
+    /// assert!(!tree.is_empty());
+    /// ```
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.length == 0
     }
 
+    /// Returns the number of keys contained in the tree.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rosewood::Rosewood;
+    ///
+    /// let mut tree = Rosewood::new();
+    ///
+    /// tree.insert(1);
+    /// tree.insert(3);
+    ///
+    /// assert_eq!(tree.len(), 2);
+    /// ```
     #[must_use]
     pub fn len(&self) -> usize {
         self.length
     }
 
+    /// Returns the maximum key in the tree, based on the ordering on `K`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rosewood::Rosewood;
+    ///
+    /// let mut tree = Rosewood::new();
+    ///
+    /// tree.insert(1);
+    /// tree.insert(3);
+    ///
+    /// assert_eq!(*tree.max().unwrap(), 3);
+    /// ```
     #[must_use]
     pub fn max(&self) -> Option<&K> {
         let mut curr_elem = self.root;
@@ -287,6 +529,20 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
     }
 
+    /// Returns the minimum key in the tree, based on the ordering on `K`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rosewood::Rosewood;
+    ///
+    /// let mut tree = Rosewood::new();
+    ///
+    /// tree.insert(1);
+    /// tree.insert(3);
+    ///
+    /// assert_eq!(*tree.min().unwrap(), 1);
+    /// ```
     #[must_use]
     pub fn min(&self) -> Option<&K> {
         let mut curr_elem = self.root;
@@ -304,8 +560,30 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
     }
 
-    pub fn remove(&mut self, key: &K) -> bool {
-        let removal_success = match self.lookup(key) {
+    /// Removes a key from the tree.
+    ///
+    /// Returns whether the key was actually deleted from the tree (if it was present in the tree).
+    ///
+    /// The type of `key` must be a borrowed from of `K`, and the ordering must match the one
+    /// on `K`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rosewood::Rosewood;
+    ///
+    /// let mut tree = Rosewood::new();
+    ///
+    /// tree.insert(1)
+    ///
+    /// assert!(tree.remove(&1));
+    /// assert!(!tree.remove(&1));
+    /// ```
+    pub fn remove<Q>(&mut self, key: &Q) -> bool
+    where
+        Q: Borrow<K> + Ord,
+    {
+        let removal_success = match self.lookup(key.borrow()) {
             Self::BLACK_NIL => false,
             idx => {
                 self.delete(idx);
@@ -907,6 +1185,13 @@ impl<'a, K: Ord> IntoIterator for &'a mut Rosewood<K> {
 }
 
 impl<K: Default + PartialEq + Ord> Rosewood<K> {
+    /// Creates a new empty `Rosewood`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut tree: Rosewood<usize> = Rosewood::new();
+    /// ```
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -917,10 +1202,43 @@ impl<K: Default + PartialEq + Ord> Rosewood<K> {
         }
     }
 
+    /// Allocates storage for at least `cap` additional tree elements.
+    ///
+    /// Does nothing if the storage capacity is already sufficient.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut tree = Rosewood::new();
+    ///
+    /// tree.insert(1);
+    /// tree.reserve(10);
+    ///
+    /// assert!(tree.capacity() >= 11);
+    /// ```
     pub fn reserve(&mut self, cap: usize) {
         self.storage.reserve(cap);
     }
 
+    /// Returns the smallest key greater than `target` in the tree, if it exists, and removes it
+    /// from the tree.
+    ///
+    /// The type of `key` must be a borrowed from of `K`, and the ordering must match the one
+    /// on `K`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rosewood::Rosewood;
+    ///
+    /// let mut tree = Rosewood::new();
+    ///
+    /// tree.insert(1);
+    /// tree.insert(4);
+    ///
+    /// assert_eq!(tree.extract_lower_bound(&3), 4);
+    /// assert!(!tree.contains(&4));
+    /// ```
     pub fn extract_lower_bound(&mut self, target: &K) -> Option<K> {
         let lower_bound = self.lower_bound(target)?;
         let key = take(&mut self.get_node_by_idx_mut(lower_bound).key);
