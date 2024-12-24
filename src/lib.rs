@@ -17,6 +17,7 @@ use core::{
     mem::{swap, take},
     ptr,
 };
+use std::ops::{Add, Sub};
 
 use alloc::vec::Vec;
 use iter::{RosewoodSortedIterator, RosewoodSortedIteratorMut};
@@ -26,6 +27,47 @@ store color information in the parent key ? reduces number of usable positions, 
 scenarios (with 64 bit usize, we can use 2^63 - 1 different keys).
 other options: bitmap, bool in every node,
 */
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct NodeIndex(pub usize);
+
+impl Add<usize> for NodeIndex {
+    type Output = NodeIndex;
+
+    fn add(self, rhs: usize) -> Self::Output {
+        Self(self.0 + rhs)
+    }
+}
+
+impl Sub<usize> for NodeIndex {
+    type Output = NodeIndex;
+
+    fn sub(self, rhs: usize) -> Self::Output {
+        Self(self.0 - rhs)
+    }
+}
+
+impl From<NodeIndex> for usize {
+    #[inline]
+    fn from(value: NodeIndex) -> Self {
+        value.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Direction {
+    Left = 0,
+    Right = 1,
+}
+
+impl Direction {
+    fn invert(self) -> Self {
+        match self {
+            Direction::Left => Direction::Right,
+            Direction::Right => Direction::Left,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(u8)]
@@ -40,9 +82,43 @@ enum NodeColor {
 struct RosewoodNode<K> {
     key: K,
     color: NodeColor,
-    parent: usize,
-    left: usize,
-    right: usize,
+    parent: NodeIndex,
+    children: [NodeIndex; 2],
+}
+
+impl<K> RosewoodNode<K> {
+    #[inline]
+    #[must_use]
+    fn left_child(&self) -> NodeIndex {
+        self.children[0]
+    }
+
+    #[inline]
+    fn set_left_child(&mut self, child: NodeIndex) {
+        self.children[0] = child;
+    }
+
+    #[inline]
+    #[must_use]
+    fn right_child(&self) -> NodeIndex {
+        self.children[1]
+    }
+
+    #[inline]
+    fn set_right_child(&mut self, child: NodeIndex) {
+        self.children[1] = child;
+    }
+
+    #[inline]
+    #[must_use]
+    fn get_child_by_direction(&self, direction: Direction) -> NodeIndex {
+        self.children[direction as usize]
+    }
+
+    #[inline]
+    fn set_child_by_direction(&mut self, child: NodeIndex, direction: Direction) {
+        self.children[direction as usize] = child
+    }
 }
 
 impl<K> RosewoodNode<K> {
@@ -50,9 +126,8 @@ impl<K> RosewoodNode<K> {
         Self {
             key,
             color: NodeColor::default(),
-            parent: 0,
-            left: 0,
-            right: 0,
+            parent: NodeIndex::default(),
+            children: [NodeIndex::default(); 2],
         }
     }
 }
@@ -62,9 +137,8 @@ impl<K: Default> Default for RosewoodNode<K> {
         Self {
             key: K::default(),
             color: NodeColor::default(),
-            parent: 0,
-            left: 0,
-            right: 0,
+            parent: NodeIndex::default(),
+            children: [NodeIndex::default(); 2],
         }
     }
 }
@@ -94,13 +168,13 @@ enum RosewoodInsertionStep {
 #[derive(Debug)]
 pub struct Rosewood<K: PartialEq + Ord> {
     storage: Vec<RosewoodNode<K>>,
-    free_nodes_head: usize,
+    free_nodes_head: NodeIndex,
     length: usize,
-    root: usize,
+    root: NodeIndex,
 }
 
 impl<K: PartialEq + Ord> Rosewood<K> {
-    const BLACK_NIL: usize = 0;
+    const BLACK_NIL: NodeIndex = NodeIndex(0);
 
     pub fn capacity(&self) -> usize {
         self.storage.capacity()
@@ -130,12 +204,13 @@ impl<K: PartialEq + Ord> Rosewood<K> {
     }
 
     pub fn find_lower_bound(&self, target: &K) -> Option<&K> {
-        self.lower_bound(target).map(|idx| &self.storage[idx].key)
+        self.lower_bound(target)
+            .map(|idx| &self.get_node_by_idx(idx).key)
     }
 
     pub fn find_lower_bound_mut(&mut self, target: &K) -> Option<&mut K> {
         self.lower_bound(target)
-            .map(|idx| &mut self.storage[idx].key)
+            .map(|idx| &mut self.get_node_by_idx_mut(idx).key)
     }
 
     pub fn insert(&mut self, key: K) -> bool {
@@ -144,36 +219,40 @@ impl<K: PartialEq + Ord> Rosewood<K> {
 
         while current_node != Self::BLACK_NIL {
             parent_node = current_node;
-            let curr_node_storage = &self.storage[current_node];
+            let curr_node_storage = self.get_node_by_idx(current_node);
 
             match key.cmp(&curr_node_storage.key) {
                 Ordering::Less => {
-                    current_node = curr_node_storage.left;
+                    current_node = curr_node_storage.left_child();
                 }
                 Ordering::Equal => {
                     return false;
                 }
                 Ordering::Greater => {
-                    current_node = curr_node_storage.right;
+                    current_node = curr_node_storage.right_child();
                 }
             }
         }
 
         let new_node_pos = self.find_free_slot_and_fill(key);
 
-        self.storage[new_node_pos].parent = parent_node;
-        self.storage[new_node_pos].left = Self::BLACK_NIL;
-        self.storage[new_node_pos].right = Self::BLACK_NIL;
-        self.storage[new_node_pos].color = NodeColor::Red;
+        self.get_node_by_idx_mut(new_node_pos).parent = parent_node;
+        self.get_node_by_idx_mut(new_node_pos)
+            .set_left_child(Self::BLACK_NIL);
+        self.get_node_by_idx_mut(new_node_pos)
+            .set_right_child(Self::BLACK_NIL);
+        self.get_node_by_idx_mut(new_node_pos).color = NodeColor::Red;
         self.length += 1;
 
         if parent_node == Self::BLACK_NIL {
             self.root = new_node_pos;
             return true;
-        } else if self.storage[new_node_pos].key < self.storage[parent_node].key {
-            self.storage[parent_node].left = new_node_pos;
+        } else if self.get_node_by_idx(new_node_pos).key < self.get_node_by_idx(parent_node).key {
+            self.get_node_by_idx_mut(parent_node)
+                .set_left_child(new_node_pos);
         } else {
-            self.storage[parent_node].right = new_node_pos;
+            self.get_node_by_idx_mut(parent_node)
+                .set_right_child(new_node_pos);
         }
 
         self.fix_red_violation(new_node_pos);
@@ -200,11 +279,11 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
 
         loop {
-            if self.storage[curr_elem].right == Self::BLACK_NIL {
-                return Some(&self.storage[curr_elem].key);
+            if self.get_node_by_idx(curr_elem).right_child() == Self::BLACK_NIL {
+                return Some(&self.get_node_by_idx(curr_elem).key);
             }
 
-            curr_elem = self.storage[curr_elem].right;
+            curr_elem = self.get_node_by_idx(curr_elem).right_child();
         }
     }
 
@@ -217,11 +296,11 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
 
         loop {
-            if self.storage[curr_elem].left == Self::BLACK_NIL {
-                return Some(&self.storage[curr_elem].key);
+            if self.get_node_by_idx(curr_elem).left_child() == Self::BLACK_NIL {
+                return Some(&self.get_node_by_idx(curr_elem).key);
             }
 
-            curr_elem = self.storage[curr_elem].left;
+            curr_elem = self.get_node_by_idx(curr_elem).left_child();
         }
     }
 
@@ -243,6 +322,26 @@ impl<K: PartialEq + Ord> Rosewood<K> {
     }
 
     #[inline]
+    fn get_node_color(&self, idx: NodeIndex) -> NodeColor {
+        self.storage[idx.0].color
+    }
+
+    #[inline]
+    fn set_node_color(&mut self, idx: NodeIndex, color: NodeColor) {
+        self.storage[idx.0].color = color;
+    }
+
+    #[inline]
+    fn get_node_by_idx(&self, idx: NodeIndex) -> &RosewoodNode<K> {
+        &self.storage[idx.0]
+    }
+
+    #[inline]
+    fn get_node_by_idx_mut(&mut self, idx: NodeIndex) -> &mut RosewoodNode<K> {
+        &mut self.storage[idx.0]
+    }
+
+    #[inline]
     #[must_use]
     fn available_slots(&self) -> usize {
         self.storage.len() - self.length - 1
@@ -250,7 +349,7 @@ impl<K: PartialEq + Ord> Rosewood<K> {
 
     fn shrink(&mut self) {
         let mid = (self.storage.len() >> 1) + 1;
-        let (front, back) = self.storage.split_at_mut(mid);
+        let (front, back) = self.storage.split_at_mut(usize::from(mid));
 
         let mut front_idx = 1;
 
@@ -260,42 +359,50 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                     if matches!(front[front_idx].color, NodeColor::Free) {
                         swap(&mut front[front_idx], &mut back[idx]);
                         let parent_idx = front[front_idx].parent;
-                        let left_idx = front[front_idx].left;
-                        let right_idx = front[front_idx].right;
+                        let left_idx = front[front_idx].left_child();
+                        let right_idx = front[front_idx].right_child();
 
-                        if self.root == mid + idx {
-                            self.root = front_idx;
+                        if self.root == NodeIndex(mid + idx) {
+                            self.root = NodeIndex(front_idx);
                         }
 
                         if parent_idx != Self::BLACK_NIL {
-                            if parent_idx >= mid {
-                                if back[parent_idx - mid].right == mid + idx {
-                                    back[parent_idx - mid].right = front_idx
+                            if parent_idx >= NodeIndex(mid) {
+                                if back[usize::from(parent_idx - mid)].right_child()
+                                    == NodeIndex(mid + idx)
+                                {
+                                    back[usize::from(parent_idx - mid)]
+                                        .set_right_child(NodeIndex(front_idx))
                                 } else {
-                                    back[parent_idx - mid].left = front_idx
+                                    back[usize::from(parent_idx - mid)]
+                                        .set_left_child(NodeIndex(front_idx))
                                 }
                             } else {
-                                if front[parent_idx].right == mid + idx {
-                                    front[parent_idx].right = front_idx
+                                if front[usize::from(parent_idx)].right_child()
+                                    == NodeIndex(mid + idx)
+                                {
+                                    front[usize::from(parent_idx)]
+                                        .set_right_child(NodeIndex(front_idx));
                                 } else {
-                                    front[parent_idx].left = front_idx
+                                    front[usize::from(parent_idx)]
+                                        .set_left_child(NodeIndex(front_idx));
                                 }
                             }
                         }
 
                         if left_idx != Self::BLACK_NIL {
-                            if left_idx >= mid {
-                                back[left_idx - mid].parent = front_idx;
+                            if left_idx >= NodeIndex(mid) {
+                                back[usize::from(left_idx - mid)].parent = NodeIndex(front_idx);
                             } else {
-                                front[left_idx].parent = front_idx;
+                                front[usize::from(left_idx)].parent = NodeIndex(front_idx);
                             }
                         }
 
                         if right_idx != Self::BLACK_NIL {
-                            if right_idx >= mid {
-                                back[right_idx - mid].parent = front_idx;
+                            if right_idx >= NodeIndex(mid) {
+                                back[usize::from(right_idx - mid)].parent = NodeIndex(front_idx);
                             } else {
-                                front[right_idx].parent = front_idx;
+                                front[usize::from(right_idx)].parent = NodeIndex(front_idx);
                             }
                         }
 
@@ -314,26 +421,26 @@ impl<K: PartialEq + Ord> Rosewood<K> {
     }
 
     fn rebuild_free_nodes_list(&mut self) {
-        self.free_nodes_head = 0;
+        self.free_nodes_head = Self::BLACK_NIL;
 
         for (idx, slot) in self.storage.iter_mut().enumerate() {
             if matches!(slot.color, NodeColor::Free) {
                 swap(&mut self.free_nodes_head, &mut slot.parent);
-                self.free_nodes_head = idx;
+                self.free_nodes_head = NodeIndex(idx);
             }
         }
     }
 
-    fn lower_bound(&self, target: &K) -> Option<usize> {
+    fn lower_bound(&self, target: &K) -> Option<NodeIndex> {
         let mut walker = self.root;
-        let mut best_fit_idx: Option<usize> = None;
+        let mut best_fit_idx: Option<NodeIndex> = None;
 
         while walker != Self::BLACK_NIL {
-            let walker_key = &self.storage[walker].key;
+            let walker_key = &self.get_node_by_idx(walker).key;
 
             match walker_key.cmp(target) {
                 Ordering::Less => {
-                    walker = self.storage[walker].right;
+                    walker = self.get_node_by_idx(walker).right_child();
                 }
                 Ordering::Equal => {
                     return Some(walker);
@@ -341,7 +448,7 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                 Ordering::Greater => {
                     best_fit_idx = match best_fit_idx {
                         Some(idx) => {
-                            if let Ordering::Less = walker_key.cmp(&self.storage[idx].key) {
+                            if let Ordering::Less = walker_key.cmp(&self.get_node_by_idx(idx).key) {
                                 Some(walker)
                             } else {
                                 Some(idx)
@@ -349,7 +456,7 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                         }
                         None => Some(walker),
                     };
-                    walker = self.storage[walker].left;
+                    walker = self.get_node_by_idx(walker).left_child();
                 }
             }
         }
@@ -358,44 +465,44 @@ impl<K: PartialEq + Ord> Rosewood<K> {
     }
 
     #[inline]
-    fn insert_free_slot(&mut self, slot: usize) {
-        self.storage[slot].parent = self.free_nodes_head;
-        self.storage[slot].color = NodeColor::Free;
+    fn insert_free_slot(&mut self, slot: NodeIndex) {
+        self.get_node_by_idx_mut(slot).parent = self.free_nodes_head;
+        self.get_node_by_idx_mut(slot).color = NodeColor::Free;
 
         self.free_nodes_head = slot;
     }
 
     #[inline]
-    fn find_free_slot_and_fill(&mut self, key: K) -> usize {
+    fn find_free_slot_and_fill(&mut self, key: K) -> NodeIndex {
         if self.free_nodes_head == Self::BLACK_NIL {
             self.storage.push(RosewoodNode::new_isolated(key));
 
-            self.storage.len() - 1
+            NodeIndex(self.storage.len() - 1)
         } else {
             let free_slot = self.free_nodes_head;
 
-            self.storage[free_slot].key = key;
-            self.free_nodes_head = self.storage[free_slot].parent;
+            self.get_node_by_idx_mut(free_slot).key = key;
+            self.free_nodes_head = self.get_node_by_idx(free_slot).parent;
 
             free_slot
         }
     }
 
-    fn lookup(&self, key: &K) -> usize {
+    fn lookup(&self, key: &K) -> NodeIndex {
         let mut current_node = self.root;
 
         while current_node != Self::BLACK_NIL {
-            let curr_node_storage = &self.storage[current_node];
+            let curr_node_storage = self.get_node_by_idx(current_node);
 
             match key.cmp(&curr_node_storage.key) {
                 Ordering::Less => {
-                    current_node = curr_node_storage.left;
+                    current_node = curr_node_storage.left_child();
                 }
                 Ordering::Equal => {
                     return current_node;
                 }
                 Ordering::Greater => {
-                    current_node = curr_node_storage.right;
+                    current_node = curr_node_storage.right_child();
                 }
             }
         }
@@ -403,22 +510,25 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         Self::BLACK_NIL
     }
 
-    fn delete(&mut self, node_idx: usize) {
+    fn delete(&mut self, node_idx: NodeIndex) {
         self.length -= 1;
 
-        match (self.storage[node_idx].left, self.storage[node_idx].right) {
+        match (
+            self.get_node_by_idx(node_idx).left_child(),
+            self.get_node_by_idx(node_idx).right_child(),
+        ) {
             (Self::BLACK_NIL, Self::BLACK_NIL) => {
                 if self.root == node_idx {
                     self.root = Self::BLACK_NIL;
                     self.insert_free_slot(node_idx);
-                } else if matches!(self.storage[node_idx].color, NodeColor::Red) {
-                    let parent_idx = self.storage[node_idx].parent;
-                    let parent = &mut self.storage[parent_idx];
+                } else if matches!(self.get_node_color(node_idx), NodeColor::Red) {
+                    let parent_idx = self.get_node_by_idx(node_idx).parent;
+                    let parent = self.get_node_by_idx_mut(parent_idx);
 
-                    if parent.left == node_idx {
-                        parent.left = Self::BLACK_NIL;
+                    if parent.left_child() == node_idx {
+                        parent.set_left_child(Self::BLACK_NIL);
                     } else {
-                        parent.right = Self::BLACK_NIL;
+                        parent.set_right_child(Self::BLACK_NIL);
                     }
 
                     self.insert_free_slot(node_idx);
@@ -428,14 +538,14 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                 }
             }
             (single_child_idx, Self::BLACK_NIL) | (Self::BLACK_NIL, single_child_idx) => {
-                let parent_idx = self.storage[node_idx].parent;
-                let parent = &mut self.storage[parent_idx];
+                let parent_idx = self.get_node_by_idx(node_idx).parent;
+                let parent = self.get_node_by_idx_mut(parent_idx);
 
                 if parent_idx != Self::BLACK_NIL {
-                    if parent.left == node_idx {
-                        parent.left = single_child_idx;
+                    if parent.left_child() == node_idx {
+                        parent.set_left_child(single_child_idx);
                     } else {
-                        parent.right = single_child_idx;
+                        parent.set_right_child(single_child_idx);
                     }
                 }
 
@@ -443,8 +553,8 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                     self.root = single_child_idx;
                 }
 
-                self.storage[single_child_idx].parent = parent_idx;
-                self.storage[single_child_idx].color = NodeColor::Black;
+                self.get_node_by_idx_mut(single_child_idx).parent = parent_idx;
+                self.set_node_color(single_child_idx, NodeColor::Black);
 
                 self.insert_free_slot(node_idx);
             }
@@ -457,27 +567,27 @@ impl<K: PartialEq + Ord> Rosewood<K> {
             }
         }
 
-        debug_assert!(self.storage[Self::BLACK_NIL].color == NodeColor::Black);
+        debug_assert_eq!(self.get_node_color(Self::BLACK_NIL), NodeColor::Black);
     }
 
-    fn swap_nodes(&mut self, node_a: usize, node_b: usize) {
+    fn swap_nodes(&mut self, node_a: NodeIndex, node_b: NodeIndex) {
         if node_a == node_b {
             return;
         }
 
-        let (part_a, part_b) = self.storage.split_at_mut(min(node_a, node_b) + 1);
+        let (part_a, part_b) = self.storage.split_at_mut(min(node_a.0, node_b.0) + 1);
 
         swap(
             &mut part_a[part_a.len() - 1].key,
-            &mut part_b[max(node_a, node_b) - min(node_a, node_b) - 1].key,
+            &mut part_b[max(node_a.0, node_b.0) - min(node_a.0, node_b.0) - 1].key,
         );
     }
 
-    fn find_inorder_predecessor(&self, subtree_root: usize) -> usize {
+    fn find_inorder_predecessor(&self, subtree_root: NodeIndex) -> NodeIndex {
         let mut curr_node = subtree_root;
 
         loop {
-            let next_node = self.storage[curr_node].right;
+            let next_node = self.get_node_by_idx(curr_node).right_child();
 
             if next_node == Self::BLACK_NIL {
                 return curr_node;
@@ -486,44 +596,49 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
     }
 
-    fn delete_black_leaf(&mut self, node_idx: usize) {
+    fn delete_black_leaf(&mut self, node_idx: NodeIndex) {
         let mut step = RosewoodDeletionStep::Starting;
         let mut curr_node = node_idx;
-        let mut parent_idx = self.storage[curr_node].parent;
-        let mut is_right_child = self.storage[parent_idx].right == curr_node;
+        let mut parent_idx = self.get_node_by_idx(curr_node).parent;
+        let mut child_direction = if self.get_node_by_idx(parent_idx).right_child() == curr_node {
+            Direction::Right
+        } else {
+            Direction::Left
+        };
         let (mut sibling_idx, mut distant_nephew_idx, mut close_nephew_idx) =
             (Self::BLACK_NIL, Self::BLACK_NIL, Self::BLACK_NIL);
 
         loop {
             match step {
                 RosewoodDeletionStep::Starting => {
-                    if is_right_child {
-                        self.storage[parent_idx].right = Self::BLACK_NIL;
-                    } else {
-                        self.storage[parent_idx].left = Self::BLACK_NIL;
-                    }
+                    self.get_node_by_idx_mut(parent_idx)
+                        .set_child_by_direction(Self::BLACK_NIL, child_direction);
+
                     step = RosewoodDeletionStep::UpdateVariables;
                 }
                 RosewoodDeletionStep::Continue => {
-                    is_right_child = self.storage[parent_idx].right == curr_node;
+                    child_direction = if self.get_node_by_idx(parent_idx).right_child() == curr_node
+                    {
+                        Direction::Right
+                    } else {
+                        Direction::Left
+                    };
                     step = RosewoodDeletionStep::UpdateVariables;
                 }
                 RosewoodDeletionStep::UpdateVariables => {
-                    parent_idx = self.storage[curr_node].parent;
+                    parent_idx = self.get_node_by_idx(curr_node).parent;
 
-                    (sibling_idx, distant_nephew_idx, close_nephew_idx) = if is_right_child {
-                        let sibling_idx = self.storage[parent_idx].left;
+                    (sibling_idx, distant_nephew_idx, close_nephew_idx) = {
+                        let sibling_idx = self
+                            .get_node_by_idx(parent_idx)
+                            .get_child_by_direction(child_direction.invert());
+
                         (
                             sibling_idx,
-                            self.storage[sibling_idx].left,
-                            self.storage[sibling_idx].right,
-                        )
-                    } else {
-                        let sibling_idx = self.storage[parent_idx].right;
-                        (
-                            sibling_idx,
-                            self.storage[sibling_idx].right,
-                            self.storage[sibling_idx].left,
+                            self.get_node_by_idx(sibling_idx)
+                                .get_child_by_direction(child_direction.invert()),
+                            self.get_node_by_idx(sibling_idx)
+                                .get_child_by_direction(child_direction),
                         )
                     };
 
@@ -532,26 +647,26 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                         continue;
                     }
 
-                    if matches!(self.storage[sibling_idx].color, NodeColor::Red) {
+                    if matches!(self.get_node_color(sibling_idx), NodeColor::Red) {
                         step = RosewoodDeletionStep::RedSibling;
                         continue;
                     }
 
                     if distant_nephew_idx != Self::BLACK_NIL
-                        && matches!(self.storage[distant_nephew_idx].color, NodeColor::Red)
+                        && matches!(self.get_node_color(distant_nephew_idx), NodeColor::Red)
                     {
                         step = RosewoodDeletionStep::DistantRed;
                         continue;
                     }
 
                     if close_nephew_idx != Self::BLACK_NIL
-                        && matches!(self.storage[close_nephew_idx].color, NodeColor::Red)
+                        && matches!(self.get_node_color(close_nephew_idx), NodeColor::Red)
                     {
                         step = RosewoodDeletionStep::CloseRedDistantBlack;
                         continue;
                     }
 
-                    if matches!(self.storage[parent_idx].color, NodeColor::Red) {
+                    if matches!(self.get_node_color(parent_idx), NodeColor::Red) {
                         step = RosewoodDeletionStep::ParentRedChildrenBlack;
                         continue;
                     }
@@ -561,27 +676,21 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                 }
                 RosewoodDeletionStep::ParentBlackSiblingBlackChildrenBlack => {
                     if sibling_idx != Self::BLACK_NIL {
-                        self.storage[sibling_idx].color = NodeColor::Red;
+                        self.set_node_color(sibling_idx, NodeColor::Red);
                     }
                     curr_node = parent_idx;
 
                     step = RosewoodDeletionStep::Continue;
                 }
                 RosewoodDeletionStep::RedSibling => {
-                    if is_right_child {
-                        self.rotate_right(parent_idx);
-                    } else {
-                        self.rotate_left(parent_idx);
-                    }
+                    self.rotate(parent_idx, child_direction);
 
-                    self.storage[parent_idx].color = NodeColor::Red;
-                    self.storage[sibling_idx].color = NodeColor::Black;
+                    self.set_node_color(parent_idx, NodeColor::Red);
+                    self.set_node_color(sibling_idx, NodeColor::Black);
 
-                    sibling_idx = if is_right_child {
-                        self.storage[parent_idx].left
-                    } else {
-                        self.storage[parent_idx].right
-                    };
+                    sibling_idx = self
+                        .get_node_by_idx(parent_idx)
+                        .get_child_by_direction(child_direction.invert());
 
                     if sibling_idx == Self::BLACK_NIL {
                         step = RosewoodDeletionStep::Ended;
@@ -590,28 +699,24 @@ impl<K: PartialEq + Ord> Rosewood<K> {
 
                     assert_ne!(sibling_idx, Self::BLACK_NIL);
 
-                    distant_nephew_idx = if is_right_child {
-                        self.storage[sibling_idx].left
-                    } else {
-                        self.storage[sibling_idx].right
-                    };
+                    distant_nephew_idx = self
+                        .get_node_by_idx(sibling_idx)
+                        .get_child_by_direction(child_direction.invert());
 
                     step = RosewoodDeletionStep::ParentRedChildrenBlack;
 
                     if distant_nephew_idx != Self::BLACK_NIL
-                        && matches!(self.storage[distant_nephew_idx].color, NodeColor::Red)
+                        && matches!(self.get_node_color(distant_nephew_idx), NodeColor::Red)
                     {
                         step = RosewoodDeletionStep::DistantRed;
                     }
 
-                    close_nephew_idx = if is_right_child {
-                        self.storage[sibling_idx].right
-                    } else {
-                        self.storage[sibling_idx].left
-                    };
+                    close_nephew_idx = self
+                        .get_node_by_idx(sibling_idx)
+                        .get_child_by_direction(child_direction);
 
                     if close_nephew_idx != Self::BLACK_NIL
-                        && matches!(self.storage[close_nephew_idx].color, NodeColor::Red)
+                        && matches!(self.get_node_color(close_nephew_idx), NodeColor::Red)
                     {
                         step = RosewoodDeletionStep::CloseRedDistantBlack;
                     }
@@ -620,21 +725,18 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                 }
                 RosewoodDeletionStep::ParentRedChildrenBlack => {
                     if sibling_idx != Self::BLACK_NIL {
-                        self.storage[sibling_idx].color = NodeColor::Red;
+                        self.set_node_color(sibling_idx, NodeColor::Red);
                     }
-                    self.storage[parent_idx].color = NodeColor::Black;
+                    self.set_node_color(parent_idx, NodeColor::Black);
 
                     step = RosewoodDeletionStep::Ended;
                     continue;
                 }
                 RosewoodDeletionStep::CloseRedDistantBlack => {
-                    if is_right_child {
-                        self.rotate_left(sibling_idx);
-                    } else {
-                        self.rotate_right(sibling_idx);
-                    }
-                    self.storage[sibling_idx].color = NodeColor::Red;
-                    self.storage[close_nephew_idx].color = NodeColor::Black;
+                    self.rotate(sibling_idx, child_direction.invert());
+
+                    self.set_node_color(sibling_idx, NodeColor::Red);
+                    self.set_node_color(close_nephew_idx, NodeColor::Black);
 
                     distant_nephew_idx = sibling_idx;
                     sibling_idx = close_nephew_idx;
@@ -643,15 +745,11 @@ impl<K: PartialEq + Ord> Rosewood<K> {
                     continue;
                 }
                 RosewoodDeletionStep::DistantRed => {
-                    if is_right_child {
-                        self.rotate_right(parent_idx);
-                    } else {
-                        self.rotate_left(parent_idx);
-                    }
+                    self.rotate(parent_idx, child_direction);
 
-                    self.storage[sibling_idx].color = self.storage[parent_idx].color;
-                    self.storage[parent_idx].color = NodeColor::Black;
-                    self.storage[distant_nephew_idx].color = NodeColor::Black;
+                    self.set_node_color(sibling_idx, self.get_node_color(parent_idx));
+                    self.set_node_color(parent_idx, NodeColor::Black);
+                    self.set_node_color(distant_nephew_idx, NodeColor::Black);
 
                     step = RosewoodDeletionStep::Ended;
                     continue;
@@ -663,83 +761,72 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
     }
 
-    fn fix_red_violation(&mut self, start_node_idx: usize) {
+    fn fix_red_violation(&mut self, start_node_idx: NodeIndex) {
         let mut step = RosewoodInsertionStep::Running;
         let mut curr_node = start_node_idx;
-        let mut uncle = Self::BLACK_NIL;
+        let mut uncle_idx = Self::BLACK_NIL;
         let mut parent_idx = Self::BLACK_NIL;
-        let mut parent_is_right_child = false;
+        let mut parent_child_direction = Direction::Left;
         let mut grandparent_idx = Self::BLACK_NIL;
 
         loop {
             match step {
                 RosewoodInsertionStep::Running => {
-                    parent_idx = self.storage[curr_node].parent;
-                    if matches!(self.storage[parent_idx].color, NodeColor::Black) {
+                    parent_idx = self.get_node_by_idx(curr_node).parent;
+                    if matches!(self.get_node_color(parent_idx), NodeColor::Black) {
                         step = RosewoodInsertionStep::Ended;
                         continue;
                     }
 
-                    grandparent_idx = self.storage[parent_idx].parent;
+                    grandparent_idx = self.get_node_by_idx(parent_idx).parent;
 
                     if grandparent_idx == Self::BLACK_NIL {
                         step = RosewoodInsertionStep::ParentRedRoot;
                         continue;
                     }
 
-                    let grandparent = &self.storage[grandparent_idx];
-                    parent_is_right_child = grandparent.right == parent_idx;
-                    uncle = if parent_is_right_child {
-                        grandparent.left
+                    let grandparent = self.get_node_by_idx(grandparent_idx);
+                    parent_child_direction = if grandparent.right_child() == parent_idx {
+                        Direction::Right
                     } else {
-                        grandparent.right
+                        Direction::Left
                     };
 
-                    if matches!(self.storage[uncle].color, NodeColor::Black) {
+                    uncle_idx = grandparent.get_child_by_direction(parent_child_direction.invert());
+
+                    if matches!(self.get_node_color(uncle_idx), NodeColor::Black) {
                         step = RosewoodInsertionStep::ParentRedUncleBlack;
                     } else {
                         step = RosewoodInsertionStep::UncleRed;
                     }
                 }
                 RosewoodInsertionStep::UncleRed => {
-                    self.storage[parent_idx].color = NodeColor::Black;
-                    self.storage[uncle].color = NodeColor::Black;
-                    self.storage[grandparent_idx].color = NodeColor::Red;
+                    self.set_node_color(parent_idx, NodeColor::Black);
+                    self.set_node_color(uncle_idx, NodeColor::Black);
+                    self.set_node_color(grandparent_idx, NodeColor::Red);
 
                     curr_node = grandparent_idx;
                     step = RosewoodInsertionStep::Running;
                 }
                 RosewoodInsertionStep::ParentRedRoot => {
-                    self.storage[parent_idx].color = NodeColor::Black;
+                    self.set_node_color(parent_idx, NodeColor::Black);
                     step = RosewoodInsertionStep::Ended;
                 }
                 RosewoodInsertionStep::ParentRedUncleBlack => {
-                    let parent = &self.storage[parent_idx];
-                    if (parent_is_right_child && parent.left == curr_node)
-                        || (!parent_is_right_child && parent.right == curr_node)
-                    {
-                        if parent_is_right_child {
-                            self.rotate_right(parent_idx);
-                        } else {
-                            self.rotate_left(parent_idx);
-                        }
+                    let parent = self.get_node_by_idx(parent_idx);
+                    if parent.get_child_by_direction(parent_child_direction.invert()) == curr_node {
+                        self.rotate(parent_idx, parent_child_direction);
 
                         curr_node = parent_idx;
-                        parent_idx = if parent_is_right_child {
-                            self.storage[grandparent_idx].right
-                        } else {
-                            self.storage[grandparent_idx].left
-                        };
+                        parent_idx = self
+                            .get_node_by_idx(grandparent_idx)
+                            .get_child_by_direction(parent_child_direction);
                     }
 
-                    self.storage[parent_idx].color = NodeColor::Black;
-                    self.storage[grandparent_idx].color = NodeColor::Red;
+                    self.set_node_color(parent_idx, NodeColor::Black);
+                    self.set_node_color(grandparent_idx, NodeColor::Red);
 
-                    if parent_is_right_child {
-                        self.rotate_left(grandparent_idx);
-                    } else {
-                        self.rotate_right(grandparent_idx);
-                    }
+                    self.rotate(grandparent_idx, parent_child_direction.invert());
 
                     step = RosewoodInsertionStep::Ended;
                 }
@@ -750,75 +837,51 @@ impl<K: PartialEq + Ord> Rosewood<K> {
         }
     }
 
-    fn rotate_left(&mut self, center: usize) {
+    fn rotate(&mut self, center: NodeIndex, direction: Direction) {
         debug_assert_ne!(
             center,
             Self::BLACK_NIL,
             "Attempted to left rotate around NIL node"
         );
 
-        let grandparent_idx = self.storage[center].parent;
-        let sibling_idx = self.storage[center].right;
+        let other_direction = direction.invert();
+
+        let grandparent_idx = self.get_node_by_idx(center).parent;
+        let sibling_idx = self
+            .get_node_by_idx(center)
+            .get_child_by_direction(other_direction);
 
         debug_assert_ne!(
             sibling_idx,
             Self::BLACK_NIL,
-            "Attempted to left rotate around {center} with NIL sibling"
+            "Attempted to left rotate around {center:?} with NIL sibling"
         );
 
-        let c_idx = self.storage[sibling_idx].left;
+        let c_idx = self
+            .get_node_by_idx(sibling_idx)
+            .get_child_by_direction(direction);
 
-        self.storage[center].right = c_idx;
+        self.get_node_by_idx_mut(center)
+            .set_child_by_direction(c_idx, other_direction);
+
         if c_idx != Self::BLACK_NIL {
-            self.storage[c_idx].parent = center;
+            self.get_node_by_idx_mut(c_idx).parent = center;
         }
 
-        self.storage[sibling_idx].left = center;
-        self.storage[center].parent = sibling_idx;
-        self.storage[sibling_idx].parent = grandparent_idx;
+        self.get_node_by_idx_mut(sibling_idx)
+            .set_child_by_direction(center, direction);
+
+        self.get_node_by_idx_mut(center).parent = sibling_idx;
+        self.get_node_by_idx_mut(sibling_idx).parent = grandparent_idx;
 
         if grandparent_idx == Self::BLACK_NIL {
             self.root = sibling_idx;
-        } else if self.storage[grandparent_idx].right == center {
-            self.storage[grandparent_idx].right = sibling_idx;
+        } else if self.get_node_by_idx(grandparent_idx).right_child() == center {
+            self.get_node_by_idx_mut(grandparent_idx)
+                .set_right_child(sibling_idx);
         } else {
-            self.storage[grandparent_idx].left = sibling_idx;
-        }
-    }
-
-    fn rotate_right(&mut self, center: usize) {
-        debug_assert_ne!(
-            center,
-            Self::BLACK_NIL,
-            "Attempted to right rotate around NIL node"
-        );
-
-        let grandparent_idx = self.storage[center].parent;
-        let sibling_idx = self.storage[center].left;
-
-        debug_assert_ne!(
-            sibling_idx,
-            Self::BLACK_NIL,
-            "Attempted to right rotate around {center} with NIL sibling"
-        );
-
-        let c_idx = self.storage[sibling_idx].right;
-
-        self.storage[center].left = c_idx;
-        if c_idx != Self::BLACK_NIL {
-            self.storage[c_idx].parent = center;
-        }
-
-        self.storage[sibling_idx].right = center;
-        self.storage[center].parent = sibling_idx;
-        self.storage[sibling_idx].parent = grandparent_idx;
-
-        if grandparent_idx == Self::BLACK_NIL {
-            self.root = sibling_idx;
-        } else if self.storage[grandparent_idx].right == center {
-            self.storage[grandparent_idx].right = sibling_idx;
-        } else {
-            self.storage[grandparent_idx].left = sibling_idx;
+            self.get_node_by_idx_mut(grandparent_idx)
+                .set_left_child(sibling_idx);
         }
     }
 }
@@ -849,7 +912,7 @@ impl<K: Default + PartialEq + Ord> Rosewood<K> {
         Self {
             storage: alloc::vec![RosewoodNode::default()],
             length: 0,
-            free_nodes_head: 0,
+            free_nodes_head: Self::BLACK_NIL,
             root: Self::BLACK_NIL,
         }
     }
@@ -860,7 +923,7 @@ impl<K: Default + PartialEq + Ord> Rosewood<K> {
 
     pub fn extract_lower_bound(&mut self, target: &K) -> Option<K> {
         let lower_bound = self.lower_bound(target)?;
-        let key = take(&mut self.storage[lower_bound].key);
+        let key = take(&mut self.get_node_by_idx_mut(lower_bound).key);
         self.delete(lower_bound);
 
         Some(key)
@@ -891,7 +954,7 @@ mod tests {
 
         tree.remove(&5);
 
-        assert_eq!(tree.storage[tree.root].key, 4);
+        assert_eq!(tree.get_node_by_idx(tree.root).key, 4);
     }
 
     #[test]
@@ -969,7 +1032,7 @@ mod tests {
 
             assert!(
                 !tree.contains(&deletion_indices[idx]),
-                "FAILED DELETION {} {:?} root = {}",
+                "FAILED DELETION {:?} {:?} root = {:?}",
                 deletion_indices[idx],
                 tree.storage,
                 tree.root
