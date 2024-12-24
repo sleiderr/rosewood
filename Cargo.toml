@@ -1,16 +1,21 @@
 [package]
 name = "rosewood"
+description = "Red-Black Tree based containers"
 version = "0.1.0"
 edition = "2024"
+license-file = "LICENSE.txt"
+authors = ["Sacha Dupuydauby <sdupuydauby@proton.me>"]
+categories = ["data-structures", "no-std"]
+repository = "https://github.com/sleiderr/rosewood"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 rand = { version = "0.8" }
+rbtree = "0.2.0"
 
 [profile.release]
 opt-level = 3
 
 [[bench]]
-name = "tree_benchmark"
+name = "rosewood_bench"
 harness = false
-opt-level = 3
