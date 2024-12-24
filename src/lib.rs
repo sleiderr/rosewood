@@ -83,6 +83,15 @@ enum RosewoodDeletionStep {
 }
 
 #[derive(Debug)]
+enum RosewoodInsertionStep {
+    Running,
+    UncleRed,
+    ParentRedRoot,
+    ParentRedUncleBlack,
+    Ended,
+}
+
+#[derive(Debug)]
 pub struct Rosewood<K: PartialEq + Ord> {
     storage: Vec<RosewoodNode<K>>,
     free_nodes_head: usize,
@@ -152,22 +161,23 @@ impl<K: PartialEq + Ord> Rosewood<K> {
 
         let new_node_pos = self.find_free_slot_and_fill(key);
 
+        self.storage[new_node_pos].parent = parent_node;
+        self.storage[new_node_pos].left = Self::BLACK_NIL;
+        self.storage[new_node_pos].right = Self::BLACK_NIL;
+        self.storage[new_node_pos].color = NodeColor::Red;
+        self.length += 1;
+
         if parent_node == Self::BLACK_NIL {
             self.root = new_node_pos;
+            return true;
         } else if self.storage[new_node_pos].key < self.storage[parent_node].key {
             self.storage[parent_node].left = new_node_pos;
         } else {
             self.storage[parent_node].right = new_node_pos;
         }
 
-        self.storage[new_node_pos].parent = parent_node;
-        self.storage[new_node_pos].left = Self::BLACK_NIL;
-        self.storage[new_node_pos].right = Self::BLACK_NIL;
-        self.storage[new_node_pos].color = NodeColor::Red;
-
         self.fix_red_violation(new_node_pos);
 
-        self.length += 1;
         true
     }
 
@@ -654,61 +664,90 @@ impl<K: PartialEq + Ord> Rosewood<K> {
     }
 
     fn fix_red_violation(&mut self, start_node_idx: usize) {
+        let mut step = RosewoodInsertionStep::Running;
         let mut curr_node = start_node_idx;
-        while matches!(
-            self.storage[self.storage[curr_node].parent].color,
-            NodeColor::Red
-        ) {
-            let parent_idx = self.storage[curr_node].parent;
-            let grandparent_idx = self.storage[self.storage[curr_node].parent].parent;
-            let grandparent = &self.storage[grandparent_idx];
+        let mut uncle = Self::BLACK_NIL;
+        let mut parent_idx = Self::BLACK_NIL;
+        let mut parent_is_right_child = false;
+        let mut grandparent_idx = Self::BLACK_NIL;
 
-            if grandparent_idx == Self::BLACK_NIL {
-                self.storage[parent_idx].color = NodeColor::Black;
-                return;
-            }
+        loop {
+            match step {
+                RosewoodInsertionStep::Running => {
+                    parent_idx = self.storage[curr_node].parent;
+                    if matches!(self.storage[parent_idx].color, NodeColor::Black) {
+                        step = RosewoodInsertionStep::Ended;
+                        continue;
+                    }
 
-            let parent_is_right_child = grandparent.right == parent_idx;
-            let uncle = if parent_is_right_child {
-                grandparent.left
-            } else {
-                grandparent.right
-            };
+                    grandparent_idx = self.storage[parent_idx].parent;
 
-            if matches!(self.storage[uncle].color, NodeColor::Red) {
-                self.storage[parent_idx].color = NodeColor::Black;
-                self.storage[uncle].color = NodeColor::Black;
-                self.storage[grandparent_idx].color = NodeColor::Red;
+                    if grandparent_idx == Self::BLACK_NIL {
+                        step = RosewoodInsertionStep::ParentRedRoot;
+                        continue;
+                    }
 
-                curr_node = grandparent_idx;
-                continue;
-            }
+                    let grandparent = &self.storage[grandparent_idx];
+                    parent_is_right_child = grandparent.right == parent_idx;
+                    uncle = if parent_is_right_child {
+                        grandparent.left
+                    } else {
+                        grandparent.right
+                    };
 
-            let parent = &self.storage[parent_idx];
-            if (parent_is_right_child && parent.left == curr_node)
-                || (!parent_is_right_child && parent.right == curr_node)
-            {
-                if parent_is_right_child {
-                    self.rotate_right(parent_idx);
-                } else {
-                    self.rotate_left(parent_idx);
+                    if matches!(self.storage[uncle].color, NodeColor::Black) {
+                        step = RosewoodInsertionStep::ParentRedUncleBlack;
+                    } else {
+                        step = RosewoodInsertionStep::UncleRed;
+                    }
                 }
+                RosewoodInsertionStep::UncleRed => {
+                    self.storage[parent_idx].color = NodeColor::Black;
+                    self.storage[uncle].color = NodeColor::Black;
+                    self.storage[grandparent_idx].color = NodeColor::Red;
 
-                curr_node = parent_idx;
-                continue;
-            }
+                    curr_node = grandparent_idx;
+                    step = RosewoodInsertionStep::Running;
+                }
+                RosewoodInsertionStep::ParentRedRoot => {
+                    self.storage[parent_idx].color = NodeColor::Black;
+                    step = RosewoodInsertionStep::Ended;
+                }
+                RosewoodInsertionStep::ParentRedUncleBlack => {
+                    let parent = &self.storage[parent_idx];
+                    if (parent_is_right_child && parent.left == curr_node)
+                        || (!parent_is_right_child && parent.right == curr_node)
+                    {
+                        if parent_is_right_child {
+                            self.rotate_right(parent_idx);
+                        } else {
+                            self.rotate_left(parent_idx);
+                        }
 
-            self.storage[parent_idx].color = NodeColor::Black;
-            self.storage[grandparent_idx].color = NodeColor::Red;
+                        curr_node = parent_idx;
+                        parent_idx = if parent_is_right_child {
+                            self.storage[grandparent_idx].right
+                        } else {
+                            self.storage[grandparent_idx].left
+                        };
+                    }
 
-            if parent_is_right_child {
-                self.rotate_left(grandparent_idx);
-            } else {
-                self.rotate_right(grandparent_idx);
+                    self.storage[parent_idx].color = NodeColor::Black;
+                    self.storage[grandparent_idx].color = NodeColor::Red;
+
+                    if parent_is_right_child {
+                        self.rotate_left(grandparent_idx);
+                    } else {
+                        self.rotate_right(grandparent_idx);
+                    }
+
+                    step = RosewoodInsertionStep::Ended;
+                }
+                RosewoodInsertionStep::Ended => {
+                    return;
+                }
             }
         }
-
-        self.storage[self.root].color = NodeColor::Black;
     }
 
     fn rotate_left(&mut self, center: usize) {
